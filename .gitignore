@@ -1,0 +1,13 @@
+## Ignore Visual Studio / .NET build outputs
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## App Data / Temp outputs
+App_Data/*.ldf
+App_Data/*.mdf
+*.log

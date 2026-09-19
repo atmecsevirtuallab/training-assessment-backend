@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="TrainingAndAssessmentConsoleApp/TrainingAndAssessmentConsoleApp.csproj" />
+  <Project Path="TrainingAndAssessmentDataAccessLayer/TrainingAndAssessmentDataAccessLayer.csproj" />
+  <Project Path="TrainingAndAssessmentWebAPI/TrainingAndAssessmentWebAPI.csproj" />
+</Solution>

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: training-assessment-api
+    env: docker
+    dockerfilePath: Dockerfile
+    context: .
+    plan: free
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
