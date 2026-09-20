@@ -10,11 +10,13 @@ public sealed class PortalDataController : ControllerBase
 {
     private readonly PortalRepository _repository;
     private readonly OllamaAnalysisService _ollama;
+    private readonly EmailOtpService _emailOtp;
 
-    public PortalDataController(PortalRepository repository, OllamaAnalysisService ollama)
+    public PortalDataController(PortalRepository repository, OllamaAnalysisService ollama, EmailOtpService emailOtp)
     {
         _repository = repository;
         _ollama = ollama;
+        _emailOtp = emailOtp;
     }
 
     [HttpPost("ai/feedback-analysis")]
@@ -72,6 +74,54 @@ public sealed class PortalDataController : ControllerBase
         return reset
             ? Ok(new { message = "Password reset successfully." })
             : NotFound(new { message = "Account not found." });
+    }
+
+    [HttpPost("auth/send-otp")]
+    public async Task<IActionResult> SendOtp([FromBody] SendOtpRequestDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.Email))
+            return BadRequest(new { message = "Email address is required." });
+
+        var exists = await _repository.UserExistsByEmailAsync(dto.Email);
+        if (!exists)
+            return NotFound(new { message = "No registered user account found with this email address." });
+
+        var result = await _emailOtp.SendOtpAsync(dto.Email);
+        return Ok(new { message = result.Message, demoOtp = result.DemoOtp });
+    }
+
+    [HttpPost("auth/verify-otp")]
+    public IActionResult VerifyOtp([FromBody] VerifyOtpRequestDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.Email) || string.IsNullOrWhiteSpace(dto.Otp))
+            return BadRequest(new { message = "Email address and OTP code are required." });
+
+        var result = _emailOtp.VerifyOtp(dto.Email, dto.Otp);
+        if (!result.Success)
+            return BadRequest(new { message = result.Message });
+
+        return Ok(new { message = result.Message, resetToken = result.ResetToken });
+    }
+
+    [HttpPost("auth/reset-password-otp")]
+    public async Task<IActionResult> ResetPasswordOtp([FromBody] ResetPasswordOtpRequestDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.Email) || string.IsNullOrWhiteSpace(dto.ResetToken) || string.IsNullOrWhiteSpace(dto.NewPassword))
+            return BadRequest(new { message = "Email, reset token, and new password are required." });
+
+        if (dto.NewPassword.Length < 6)
+            return BadRequest(new { message = "The new password must be at least 6 characters long." });
+
+        var isValidToken = _emailOtp.ValidateResetToken(dto.Email, dto.ResetToken);
+        if (!isValidToken)
+            return BadRequest(new { message = "Invalid or expired reset token. Please restart password reset." });
+
+        var reset = await _repository.ResetPasswordByEmailAsync(dto.Email, dto.NewPassword);
+        if (!reset)
+            return BadRequest(new { message = "Failed to reset password. User account not found." });
+
+        _emailOtp.InvalidateOtp(dto.Email);
+        return Ok(new { message = "Password reset successfully. You can now sign in with your new password." });
     }
 
     [HttpGet("accounts")]

@@ -718,6 +718,39 @@ public sealed class PortalRepository
             new SqlParameter("@hash", PasswordSecurity.Hash(newPassword)),
             new SqlParameter("@id", accountId)) > 0;
 
+    public async Task<bool> UserExistsByEmailAsync(string email)
+    {
+        var e = email.Trim().ToLowerInvariant();
+        var accountsCount = Convert.ToInt32(await ExecuteScalarAsync(
+            "SELECT COUNT(1) FROM Accounts WHERE LOWER(Email) = LOWER(@email)",
+            new SqlParameter("@email", e)));
+        if (accountsCount > 0) return true;
+
+        var studentsCount = Convert.ToInt32(await ExecuteScalarAsync(
+            "SELECT COUNT(1) FROM Students WHERE LOWER(EmailId) = LOWER(@email)",
+            new SqlParameter("@email", e)));
+        return studentsCount > 0;
+    }
+
+    public async Task<bool> ResetPasswordByEmailAsync(string email, string newPassword)
+    {
+        var e = email.Trim().ToLowerInvariant();
+        await EnsureStudentAccountAsync(e);
+        var hash = PasswordSecurity.Hash(newPassword);
+        var updated = await ExecuteNonQueryAsync(
+            "UPDATE Accounts SET PasswordHash = @hash, UpdatedAt = SYSUTCDATETIME() WHERE LOWER(Email) = LOWER(@email)",
+            new SqlParameter("@hash", hash), new SqlParameter("@email", e));
+
+        if (updated == 0)
+        {
+            updated = await ExecuteNonQueryAsync(@"
+                UPDATE Accounts SET PasswordHash = @hash, UpdatedAt = SYSUTCDATETIME()
+                WHERE AccountId IN (SELECT AccountId FROM Students WHERE LOWER(EmailId) = LOWER(@email))",
+                new SqlParameter("@hash", hash), new SqlParameter("@email", e));
+        }
+        return updated > 0;
+    }
+
     public async Task<string> CreateAccountAsync(CreateAccountDto dto)
     {
         var roleId = dto.Role.Equals("HOD", StringComparison.OrdinalIgnoreCase) ? 2

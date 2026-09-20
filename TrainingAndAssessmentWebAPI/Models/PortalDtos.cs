@@ -165,6 +165,9 @@ public sealed record SaveStudentDto(
 public sealed record LoginRequestDto(string Role, string Username, string Password);
 public sealed record ChangePasswordRequestDto(string AccountId, string CurrentPassword, string NewPassword);
 public sealed record AdminResetPasswordRequestDto(string NewPassword);
+public sealed record SendOtpRequestDto(string Email);
+public sealed record VerifyOtpRequestDto(string Email, string Otp);
+public sealed record ResetPasswordOtpRequestDto(string Email, string ResetToken, string NewPassword);
 public sealed record AuthenticatedUserDto(
     string AccountId,
     string Role,

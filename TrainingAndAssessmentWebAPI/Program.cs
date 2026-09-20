@@ -26,6 +26,7 @@ namespace TrainingAndAssessmentWebAPI
             builder.Services.AddSingleton<InteractiveProgramService>();
             builder.Services.AddHttpClient<OllamaAnalysisService>(client => client.Timeout = TimeSpan.FromSeconds(90));
             builder.Services.AddSingleton<WordReportService>();
+            builder.Services.AddSingleton<EmailOtpService>();
             builder.Services.AddScoped<DatabaseBackupService>();
             builder.Services.AddSingleton<LiveQuizCoordinator>();
             builder.Services.AddCors(options =>
