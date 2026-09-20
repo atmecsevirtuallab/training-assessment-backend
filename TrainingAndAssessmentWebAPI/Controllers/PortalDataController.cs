@@ -130,8 +130,11 @@ public sealed class PortalDataController : ControllerBase
     [HttpPost("accounts")]
     public async Task<IActionResult> CreateAccount([FromBody] CreateAccountDto dto)
     {
-        if (string.IsNullOrWhiteSpace(dto.Role) || string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Email))
-            return BadRequest(new { message = "Role, Name, and Email are required." });
+        if (string.IsNullOrWhiteSpace(dto.Role) || string.IsNullOrWhiteSpace(dto.Name))
+            return BadRequest(new { message = "Role and Name are required." });
+
+        if (!dto.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(dto.Email))
+            return BadRequest(new { message = "Email ID is required for HOD and Trainer accounts." });
 
         if (dto.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(dto.Usn))
             return BadRequest(new { message = "USN is required when creating a Student account." });
@@ -140,10 +143,32 @@ public sealed class PortalDataController : ControllerBase
         var defaultPass = !string.IsNullOrWhiteSpace(dto.Password) ? dto.Password
             : dto.Role.Equals("HOD", StringComparison.OrdinalIgnoreCase) ? "HOD"
             : dto.Role.Equals("Trainer", StringComparison.OrdinalIgnoreCase) ? "TRAINER"
-            : dto.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) ? (dto.Usn?.Trim().ToUpperInvariant() ?? "STUDENT")
+            : dto.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) ? "student123"
             : "Atme@1234";
 
         return Ok(new { accountId, message = $"Account created successfully for {dto.Name} ({accountId}). Default password: {defaultPass}" });
+    }
+
+    [HttpPost("student/complete-profile")]
+    public async Task<IActionResult> CompleteStudentProfile([FromBody] CompleteStudentProfileDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.AccountId) || string.IsNullOrWhiteSpace(dto.Email) || string.IsNullOrWhiteSpace(dto.NewPassword))
+            return BadRequest(new { message = "Email ID and New Password are required." });
+
+        if (!dto.Email.Contains("@") || !dto.Email.Contains("."))
+            return BadRequest(new { message = "Please enter a valid Email ID." });
+
+        if (dto.NewPassword.Trim().Length < 6)
+            return BadRequest(new { message = "Password must be at least 6 characters long." });
+
+        if (dto.NewPassword.Trim().Equals("student123", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { message = "Please choose a new password different from the default password (student123)." });
+
+        var success = await _repository.CompleteStudentProfileAsync(dto);
+        if (!success)
+            return BadRequest(new { message = "Failed to update profile. Please check account details." });
+
+        return Ok(new { message = "Profile updated successfully! Welcome to the portal." });
     }
 
     [HttpGet("students")]

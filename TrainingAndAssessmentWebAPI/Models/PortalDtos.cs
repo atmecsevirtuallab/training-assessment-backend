@@ -175,6 +175,7 @@ public sealed record AdminResetPasswordRequestDto(string NewPassword);
 public sealed record SendOtpRequestDto(string Email);
 public sealed record VerifyOtpRequestDto(string Email, string Otp);
 public sealed record ResetPasswordOtpRequestDto(string Email, string ResetToken, string NewPassword);
+public sealed record CompleteStudentProfileDto(string AccountId, string Email, string NewPassword);
 public sealed record AuthenticatedUserDto(
     string AccountId,
     string Role,
@@ -183,7 +184,8 @@ public sealed record AuthenticatedUserDto(
     string Email,
     string? Usn,
     string? CurrentSemester,
-    string DepartmentOrBatch);
+    string DepartmentOrBatch,
+    bool MustUpdateProfile = false);
 
 public sealed record SaveBatchDto(
     string BatchCode,

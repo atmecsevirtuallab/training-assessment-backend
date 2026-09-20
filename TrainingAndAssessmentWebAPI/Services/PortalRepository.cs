@@ -626,29 +626,30 @@ public sealed class PortalRepository
 
         const string sql = @"
             SELECT TOP 1 a.AccountId, r.RoleName, a.Name, a.Email, a.DepartmentOrBatch, a.PasswordHash,
-                   s.StudentId, s.USN, s.CurrentSemester
+                   s.StudentId, s.USN, s.CurrentSemester, s.EmailId AS StudentEmail
             FROM Accounts a
             INNER JOIN Roles r ON r.RoleId = a.RoleId
             LEFT JOIN Students s ON s.AccountId = a.AccountId
-            WHERE (LOWER(a.Email) = LOWER(@username) OR LOWER(s.EmailId) = LOWER(@username))
+            WHERE (LOWER(s.USN) = LOWER(@username) OR LOWER(a.AccountId) = LOWER(@username) OR (a.Email <> '' AND LOWER(a.Email) = LOWER(@username)) OR (s.EmailId <> '' AND LOWER(s.EmailId) = LOWER(@username)))
               AND LOWER(r.RoleName) = LOWER(@role) AND a.Status = 'Active'";
         var rows = await QueryAsync(sql, reader => new {
             AccountId = reader.GetString("AccountId"), Role = reader.GetString("RoleName"), Name = reader.GetString("Name"),
             Email = reader.GetString("Email"), Department = reader.GetString("DepartmentOrBatch"), Hash = reader.GetNullableString("PasswordHash"),
             StudentId = reader["StudentId"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["StudentId"]),
-            Usn = reader.GetNullableString("USN"), Semester = reader.GetNullableString("CurrentSemester")
+            Usn = reader.GetNullableString("USN"), Semester = reader.GetNullableString("CurrentSemester"),
+            StudentEmail = reader.GetNullableString("StudentEmail")
         }, new SqlParameter("@username", dto.Username.Trim()), new SqlParameter("@role", dto.Role.Trim()));
         var row = rows.FirstOrDefault();
         if (row is null) return null;
 
         var valid = PasswordSecurity.Verify(dto.Password, row.Hash);
-        // Legacy rows predate authentication. First login applies the role's configured default and upgrades it to a secure hash.
-        var defaultPassword = row.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) ? row.Usn
+        var defaultPassword = row.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) ? "student123"
             : row.Role.Equals("HOD", StringComparison.OrdinalIgnoreCase) ? "HOD"
             : row.Role.Equals("Trainer", StringComparison.OrdinalIgnoreCase) ? "TRAINER"
             : null;
-        if (!valid && string.IsNullOrWhiteSpace(row.Hash) && defaultPassword is not null &&
-            string.Equals(dto.Password, defaultPassword, StringComparison.Ordinal))
+
+        if (!valid && (string.IsNullOrWhiteSpace(row.Hash) || (row.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) && row.Usn != null && PasswordSecurity.Verify(row.Usn, row.Hash))) && defaultPassword is not null &&
+            (string.Equals(dto.Password, defaultPassword, StringComparison.Ordinal) || (row.Usn is not null && string.Equals(dto.Password, row.Usn, StringComparison.OrdinalIgnoreCase))))
         {
             await ExecuteNonQueryAsync("UPDATE Accounts SET PasswordHash = @hash, LastLoginAt = SYSUTCDATETIME(), UpdatedAt = SYSUTCDATETIME() WHERE AccountId = @id",
                 new SqlParameter("@hash", PasswordSecurity.Hash(dto.Password)), new SqlParameter("@id", row.AccountId));
@@ -658,18 +659,28 @@ public sealed class PortalRepository
         {
             await ExecuteNonQueryAsync("UPDATE Accounts SET LastLoginAt = SYSUTCDATETIME() WHERE AccountId = @id", new SqlParameter("@id", row.AccountId));
         }
-        return !valid ? null : new AuthenticatedUserDto(row.AccountId, row.Role, row.StudentId, row.Name, row.Email, row.Usn, row.Semester, row.Department);
+
+        if (!valid) return null;
+
+        var effectiveEmail = !string.IsNullOrWhiteSpace(row.StudentEmail) && !row.StudentEmail.EndsWith("@pending.local") ? row.StudentEmail
+            : (!string.IsNullOrWhiteSpace(row.Email) && !row.Email.EndsWith("@pending.local") ? row.Email : "");
+
+        var isEmailPending = string.IsNullOrWhiteSpace(effectiveEmail) || !effectiveEmail.Contains("@");
+        var isPasswordDefault = PasswordSecurity.Verify("student123", row.Hash) || (row.Usn != null && PasswordSecurity.Verify(row.Usn, row.Hash)) || string.IsNullOrWhiteSpace(row.Hash);
+        var mustUpdateProfile = row.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) && (isEmailPending || isPasswordDefault);
+
+        return new AuthenticatedUserDto(row.AccountId, row.Role, row.StudentId, row.Name, effectiveEmail, row.Usn, row.Semester, row.Department, mustUpdateProfile);
     }
 
     private async Task EnsureStudentAccountAsync(string username)
     {
         const string findSql = @"
             SELECT TOP 1 StudentId, USN, Name, CurrentSemester, EmailId, ContactNo, Status
-            FROM Students WHERE AccountId IS NULL AND LOWER(EmailId) = LOWER(@email)";
+            FROM Students WHERE AccountId IS NULL AND (LOWER(USN) = LOWER(@username) OR LOWER(EmailId) = LOWER(@username))";
         var students = await QueryAsync(findSql, r => new {
             Id = r.GetInt32("StudentId"), Usn = r.GetString("USN"), Name = r.GetString("Name"), Semester = r.GetString("CurrentSemester"),
             Email = r.GetString("EmailId"), Contact = r.GetString("ContactNo"), Status = r.GetString("Status")
-        }, new SqlParameter("@email", username.Trim()));
+        }, new SqlParameter("@username", username.Trim()));
         var student = students.FirstOrDefault();
         if (student is null) return;
 
@@ -687,12 +698,13 @@ public sealed class PortalRepository
                     VALUES (@accountId, 4, @name, @department, @email, @contact, @status, @hash, SYSUTCDATETIME());
                     UPDATE Students SET AccountId = @accountId WHERE StudentId = @studentId;
                 END";
+            var effectiveEmail = !string.IsNullOrWhiteSpace(student.Email) ? student.Email.ToLowerInvariant() : $"{student.Usn.ToLowerInvariant()}@pending.local";
             await using var command = new SqlCommand(sql, connection, transaction);
             command.Parameters.AddRange(new[] {
                 new SqlParameter("@studentId", student.Id), new SqlParameter("@name", student.Name),
-                new SqlParameter("@department", $"Student - {student.Semester} Semester"), new SqlParameter("@email", student.Email.ToLowerInvariant()),
+                new SqlParameter("@department", $"Student - {student.Semester} Semester"), new SqlParameter("@email", effectiveEmail),
                 new SqlParameter("@contact", student.Contact), new SqlParameter("@status", student.Status),
-                new SqlParameter("@hash", PasswordSecurity.Hash(student.Usn))
+                new SqlParameter("@hash", PasswordSecurity.Hash("student123"))
             });
             await command.ExecuteNonQueryAsync();
             await transaction.CommitAsync();
@@ -710,6 +722,28 @@ public sealed class PortalRepository
         if (rows.Count == 0 || !PasswordSecurity.Verify(dto.CurrentPassword, rows[0])) return false;
         return await ExecuteNonQueryAsync("UPDATE Accounts SET PasswordHash = @hash, UpdatedAt = SYSUTCDATETIME() WHERE AccountId = @id",
             new SqlParameter("@hash", PasswordSecurity.Hash(dto.NewPassword)), new SqlParameter("@id", dto.AccountId)) > 0;
+    }
+
+    public async Task<bool> CompleteStudentProfileAsync(CompleteStudentProfileDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.AccountId) || string.IsNullOrWhiteSpace(dto.Email) || string.IsNullOrWhiteSpace(dto.NewPassword))
+            return false;
+
+        var email = dto.Email.Trim().ToLowerInvariant();
+        var hash = PasswordSecurity.Hash(dto.NewPassword.Trim());
+
+        await ExecuteNonQueryAsync(
+            "UPDATE Accounts SET Email = @email, PasswordHash = @hash, UpdatedAt = SYSUTCDATETIME() WHERE AccountId = @id",
+            new SqlParameter("@email", email),
+            new SqlParameter("@hash", hash),
+            new SqlParameter("@id", dto.AccountId));
+
+        await ExecuteNonQueryAsync(
+            "UPDATE Students SET EmailId = @email WHERE AccountId = @id",
+            new SqlParameter("@email", email),
+            new SqlParameter("@id", dto.AccountId));
+
+        return true;
     }
 
     public async Task<bool> ResetPasswordByAdminAsync(string accountId, string newPassword) =>
