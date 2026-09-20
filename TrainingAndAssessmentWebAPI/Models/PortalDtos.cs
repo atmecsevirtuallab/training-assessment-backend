@@ -22,7 +22,31 @@ public sealed record AccountDto(
     string Email,
     string ContactNo,
     string Status,
-    DateTime? LastLoginAt);
+    DateTime? LastLoginAt,
+    string? Usn = null,
+    string? CurrentSemester = null,
+    string? Qualification = null,
+    string? Designation = null,
+    string? TeachingExperience = null,
+    string? IndustryExperience = null,
+    string? TotalExperience = null);
+
+public sealed record UpdateAccountFullDto(
+    string? AccountId = null,
+    string Role = "",
+    string Name = "",
+    string DepartmentOrBatch = "",
+    string Email = "",
+    string ContactNo = "",
+    string Status = "Active",
+    string? Password = null,
+    string? Usn = null,
+    string? CurrentSemester = null,
+    string? Qualification = null,
+    string? Designation = null,
+    string? TeachingExperience = null,
+    string? IndustryExperience = null,
+    string? TotalExperience = null);
 
 public sealed record CreateAccountDto(
     string? AccountId,

@@ -149,6 +149,45 @@ public sealed class PortalDataController : ControllerBase
         return Ok(new { accountId, message = $"Account created successfully for {dto.Name} ({accountId}). Default password: {defaultPass}" });
     }
 
+    [HttpPut("accounts/{accountId}")]
+    public async Task<IActionResult> UpdateAccount(string accountId, [FromBody] UpdateAccountFullDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(accountId) || dto == null)
+            return BadRequest(new { message = "Invalid account payload." });
+
+        try
+        {
+            var payload = dto with { AccountId = accountId };
+            var success = await _repository.UpdateAccountFullAsync(payload);
+            return success
+                ? Ok(new { message = $"Account {accountId} updated successfully." })
+                : NotFound(new { message = "Account not found or update failed." });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpDelete("accounts/{accountId}")]
+    public async Task<IActionResult> DeleteAccount(string accountId)
+    {
+        if (string.IsNullOrWhiteSpace(accountId))
+            return BadRequest(new { message = "Invalid Account ID." });
+
+        try
+        {
+            var success = await _repository.DeleteAccountAsync(accountId);
+            return success
+                ? Ok(new { message = $"Account {accountId} deleted successfully." })
+                : NotFound(new { message = $"Account {accountId} not found." });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     [HttpPost("student/complete-profile")]
     public async Task<IActionResult> CompleteStudentProfile([FromBody] CompleteStudentProfileDto dto)
     {

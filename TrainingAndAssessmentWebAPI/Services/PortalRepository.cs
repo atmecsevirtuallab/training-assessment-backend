@@ -31,8 +31,13 @@ public sealed class PortalRepository
             reader.GetInt32("TotalFeedbacks")))).FirstOrDefault();
 
     public Task<List<AccountDto>> GetAccountsAsync() => QueryAsync(@"
-        SELECT a.AccountId, r.RoleName, a.Name, a.DepartmentOrBatch, a.Email, a.ContactNo, a.Status, a.LastLoginAt
-        FROM Accounts a INNER JOIN Roles r ON r.RoleId = a.RoleId
+        SELECT a.AccountId, r.RoleName, a.Name, a.DepartmentOrBatch, a.Email, a.ContactNo, a.Status, a.LastLoginAt,
+               s.USN, s.CurrentSemester,
+               t.Qualification, t.Designation, t.TeachingExperience, t.IndustryExperience, t.TotalExperience
+        FROM Accounts a
+        INNER JOIN Roles r ON r.RoleId = a.RoleId
+        LEFT JOIN Students s ON s.AccountId = a.AccountId
+        LEFT JOIN Trainers t ON (LOWER(t.EmailId) = LOWER(a.Email) OR (t.EmailId = '' AND t.Name = a.Name))
         ORDER BY r.RoleId, a.AccountId", reader => new AccountDto(
             reader.GetString("AccountId"),
             reader.GetString("RoleName"),
@@ -41,7 +46,14 @@ public sealed class PortalRepository
             reader.GetString("Email"),
             reader.GetString("ContactNo"),
             reader.GetString("Status"),
-            reader.GetNullableDateTime("LastLoginAt")));
+            reader.GetNullableDateTime("LastLoginAt"),
+            reader.GetNullableString("USN"),
+            reader.GetNullableString("CurrentSemester"),
+            reader.GetNullableString("Qualification"),
+            reader.GetNullableString("Designation"),
+            reader.GetNullableString("TeachingExperience"),
+            reader.GetNullableString("IndustryExperience"),
+            reader.GetNullableString("TotalExperience")));
 
     public Task<List<StudentDto>> GetStudentsAsync() => QueryAsync(@"
         SELECT StudentId, USN, Name, CurrentSemester, EmailId, ContactNo, Status
@@ -631,7 +643,7 @@ public sealed class PortalRepository
             INNER JOIN Roles r ON r.RoleId = a.RoleId
             LEFT JOIN Students s ON s.AccountId = a.AccountId
             WHERE (LOWER(s.USN) = LOWER(@username) OR LOWER(a.AccountId) = LOWER(@username) OR (a.Email <> '' AND LOWER(a.Email) = LOWER(@username)) OR (s.EmailId <> '' AND LOWER(s.EmailId) = LOWER(@username)))
-              AND LOWER(r.RoleName) = LOWER(@role) AND a.Status = 'Active'";
+              AND LOWER(r.RoleName) = LOWER(@role) AND a.Status IN ('Active', 'Pending')";
         var rows = await QueryAsync(sql, reader => new {
             AccountId = reader.GetString("AccountId"), Role = reader.GetString("RoleName"), Name = reader.GetString("Name"),
             Email = reader.GetString("Email"), Department = reader.GetString("DepartmentOrBatch"), Hash = reader.GetNullableString("PasswordHash"),
@@ -847,8 +859,8 @@ public sealed class PortalRepository
             if (!exists)
             {
                 const string studentSql = @"
-                    INSERT INTO Students (AccountId, USN, Name, CurrentSemester, EmailId, ContactNo, Status, CreatedAt)
-                    VALUES (@accountId, @usn, @name, @sem, @email, @contact, 'Active', SYSUTCDATETIME());";
+                    INSERT INTO Students (AccountId, USN, Name, CurrentSemester, EmailId, ContactNo, Status)
+                    VALUES (@accountId, @usn, @name, @sem, @email, @contact, 'Active');";
                 await ExecuteNonQueryAsync(studentSql,
                     new SqlParameter("@accountId", accountId),
                     new SqlParameter("@usn", usn),
@@ -910,6 +922,157 @@ public sealed class PortalRepository
         }
 
         return accountId;
+    }
+
+    public async Task<bool> UpdateAccountFullAsync(UpdateAccountFullDto dto)
+    {
+        var role = dto.Role.Trim();
+        var email = dto.Email.Trim().ToLowerInvariant();
+
+        var existingAccounts = await QueryAsync("SELECT Email, Name FROM Accounts WHERE LOWER(AccountId) = LOWER(@id)",
+            r => new { Email = r.GetNullableString("Email") ?? string.Empty, Name = r.GetNullableString("Name") ?? string.Empty },
+            new SqlParameter("@id", dto.AccountId));
+        var oldEmail = existingAccounts.FirstOrDefault()?.Email.ToLowerInvariant() ?? string.Empty;
+        var oldName = existingAccounts.FirstOrDefault()?.Name ?? string.Empty;
+
+        string sql;
+        int updated;
+
+        if (!string.IsNullOrWhiteSpace(dto.Password))
+        {
+            var hash = PasswordSecurity.Hash(dto.Password);
+            sql = @"
+                UPDATE Accounts
+                SET Name = @name, DepartmentOrBatch = @dept, Email = @email, ContactNo = @contact, Status = @status, PasswordHash = @hash, UpdatedAt = SYSUTCDATETIME()
+                WHERE LOWER(AccountId) = LOWER(@accountId) OR (Email <> '' AND LOWER(Email) = LOWER(@email))";
+            updated = await ExecuteNonQueryAsync(sql,
+                new SqlParameter("@accountId", dto.AccountId),
+                new SqlParameter("@name", dto.Name),
+                new SqlParameter("@dept", dto.DepartmentOrBatch ?? string.Empty),
+                new SqlParameter("@email", email),
+                new SqlParameter("@contact", dto.ContactNo ?? string.Empty),
+                new SqlParameter("@status", dto.Status ?? "Active"),
+                new SqlParameter("@hash", hash));
+        }
+        else
+        {
+            sql = @"
+                UPDATE Accounts
+                SET Name = @name, DepartmentOrBatch = @dept, Email = @email, ContactNo = @contact, Status = @status, UpdatedAt = SYSUTCDATETIME()
+                WHERE LOWER(AccountId) = LOWER(@accountId) OR (Email <> '' AND LOWER(Email) = LOWER(@email))";
+            updated = await ExecuteNonQueryAsync(sql,
+                new SqlParameter("@accountId", dto.AccountId),
+                new SqlParameter("@name", dto.Name),
+                new SqlParameter("@dept", dto.DepartmentOrBatch ?? string.Empty),
+                new SqlParameter("@email", email),
+                new SqlParameter("@contact", dto.ContactNo ?? string.Empty),
+                new SqlParameter("@status", dto.Status ?? "Active"));
+        }
+
+        if (updated == 0)
+        {
+            var roleId = role.Equals("HOD", StringComparison.OrdinalIgnoreCase) ? 2
+                : role.Equals("Trainer", StringComparison.OrdinalIgnoreCase) ? 3
+                : 4;
+            var defaultPass = !string.IsNullOrWhiteSpace(dto.Password) ? dto.Password : "Atme@1234";
+            var hash = PasswordSecurity.Hash(defaultPass);
+
+            await ExecuteNonQueryAsync(@"
+                INSERT INTO Accounts (AccountId, RoleId, Name, DepartmentOrBatch, Email, ContactNo, Status, PasswordHash, CreatedAt)
+                VALUES (@accountId, @roleId, @name, @dept, @email, @contact, @status, @hash, SYSUTCDATETIME());",
+                new SqlParameter("@accountId", dto.AccountId),
+                new SqlParameter("@roleId", roleId),
+                new SqlParameter("@name", dto.Name),
+                new SqlParameter("@dept", dto.DepartmentOrBatch ?? string.Empty),
+                new SqlParameter("@email", email),
+                new SqlParameter("@contact", dto.ContactNo ?? string.Empty),
+                new SqlParameter("@status", dto.Status ?? "Active"),
+                new SqlParameter("@hash", hash));
+
+            updated = 1;
+        }
+
+        if (role.Equals("Student", StringComparison.OrdinalIgnoreCase))
+        {
+            var studentStatus = dto.Status.Equals("Detained", StringComparison.OrdinalIgnoreCase) ? "Detained"
+                : dto.Status.Equals("Discontinued", StringComparison.OrdinalIgnoreCase) ? "Discontinued"
+                : "Active";
+
+            var studentRows = await ExecuteNonQueryAsync(@"
+                UPDATE Students
+                SET Name = @name, CurrentSemester = @sem, EmailId = @email, ContactNo = @contact, Status = @status
+                WHERE LOWER(AccountId) = LOWER(@accountId) OR (USN <> '' AND LOWER(USN) = LOWER(@usn))",
+                new SqlParameter("@accountId", dto.AccountId),
+                new SqlParameter("@usn", dto.Usn ?? string.Empty),
+                new SqlParameter("@name", dto.Name),
+                new SqlParameter("@sem", dto.CurrentSemester ?? "1st Semester"),
+                new SqlParameter("@email", email),
+                new SqlParameter("@contact", dto.ContactNo ?? string.Empty),
+                new SqlParameter("@status", studentStatus));
+
+            if (studentRows == 0 && !string.IsNullOrWhiteSpace(dto.Usn))
+            {
+                await ExecuteNonQueryAsync(@"
+                    INSERT INTO Students (AccountId, USN, Name, CurrentSemester, EmailId, ContactNo, Status)
+                    VALUES (@accountId, @usn, @name, @sem, @email, @contact, @status);",
+                    new SqlParameter("@accountId", dto.AccountId),
+                    new SqlParameter("@usn", dto.Usn.Trim().ToUpperInvariant()),
+                    new SqlParameter("@name", dto.Name),
+                    new SqlParameter("@sem", dto.CurrentSemester ?? "1st Semester"),
+                    new SqlParameter("@email", email),
+                    new SqlParameter("@contact", dto.ContactNo ?? string.Empty),
+                    new SqlParameter("@status", studentStatus));
+            }
+        }
+        else if (role.Equals("Trainer", StringComparison.OrdinalIgnoreCase))
+        {
+            var trainerRows = await ExecuteNonQueryAsync(@"
+                UPDATE Trainers
+                SET Name = @name, Qualification = @qual, Designation = @desig, TeachingExperience = @teachExp, IndustryExperience = @indExp, TotalExperience = @totExp, ContactNo = @contact, EmailId = @email
+                WHERE (EmailId <> '' AND (LOWER(EmailId) = LOWER(@email) OR LOWER(EmailId) = LOWER(@oldEmail))) OR Name = @name OR Name = @oldName",
+                new SqlParameter("@name", dto.Name),
+                new SqlParameter("@oldName", oldName),
+                new SqlParameter("@qual", dto.Qualification ?? string.Empty),
+                new SqlParameter("@desig", dto.Designation ?? string.Empty),
+                new SqlParameter("@teachExp", dto.TeachingExperience ?? string.Empty),
+                new SqlParameter("@indExp", dto.IndustryExperience ?? string.Empty),
+                new SqlParameter("@totExp", dto.TotalExperience ?? string.Empty),
+                new SqlParameter("@email", email),
+                new SqlParameter("@oldEmail", oldEmail),
+                new SqlParameter("@contact", dto.ContactNo ?? string.Empty));
+
+            if (trainerRows == 0)
+            {
+                await ExecuteNonQueryAsync(@"
+                    INSERT INTO Trainers (Name, Qualification, Designation, TeachingExperience, IndustryExperience, TotalExperience, EmailId, ContactNo, IsActive)
+                    VALUES (@name, @qual, @desig, @teachExp, @indExp, @totExp, @email, @contact, 1);",
+                    new SqlParameter("@name", dto.Name),
+                    new SqlParameter("@qual", dto.Qualification ?? string.Empty),
+                    new SqlParameter("@desig", dto.Designation ?? string.Empty),
+                    new SqlParameter("@teachExp", dto.TeachingExperience ?? string.Empty),
+                    new SqlParameter("@indExp", dto.IndustryExperience ?? string.Empty),
+                    new SqlParameter("@totExp", dto.TotalExperience ?? string.Empty),
+                    new SqlParameter("@email", email),
+                    new SqlParameter("@contact", dto.ContactNo ?? string.Empty));
+            }
+        }
+
+        return true;
+    }
+
+    public async Task<bool> DeleteAccountAsync(string accountId)
+    {
+        var email = await QueryAsync("SELECT Email FROM Accounts WHERE LOWER(AccountId) = LOWER(@id)", r => r.GetNullableString("Email"), new SqlParameter("@id", accountId));
+        var userEmail = email.FirstOrDefault() ?? string.Empty;
+
+        await ExecuteNonQueryAsync("DELETE FROM Students WHERE LOWER(AccountId) = LOWER(@id)", new SqlParameter("@id", accountId));
+        if (!string.IsNullOrWhiteSpace(userEmail))
+        {
+            await ExecuteNonQueryAsync("DELETE FROM Trainers WHERE LOWER(EmailId) = LOWER(@email)", new SqlParameter("@email", userEmail));
+        }
+
+        var rows = await ExecuteNonQueryAsync("DELETE FROM Accounts WHERE LOWER(AccountId) = LOWER(@id)", new SqlParameter("@id", accountId));
+        return rows > 0;
     }
 
     public async Task<int> BulkCreateStudentsAsync(List<SaveStudentDto> dtos)
