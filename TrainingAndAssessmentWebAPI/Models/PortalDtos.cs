@@ -33,7 +33,12 @@ public sealed record CreateAccountDto(
     string ContactNo,
     string? Password = null,
     string? Usn = null,
-    string? CurrentSemester = null);
+    string? CurrentSemester = null,
+    string? Qualification = null,
+    string? Designation = null,
+    string? TeachingExperience = null,
+    string? IndustryExperience = null,
+    string? TotalExperience = null);
 
 public sealed record StudentDto(
     int StudentId,

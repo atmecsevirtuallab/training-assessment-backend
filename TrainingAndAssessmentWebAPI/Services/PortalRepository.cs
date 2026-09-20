@@ -837,6 +837,44 @@ public sealed class PortalRepository
             }
         }
 
+        if (role.Equals("Trainer", StringComparison.OrdinalIgnoreCase))
+        {
+            var email = dto.Email.Trim().ToLowerInvariant();
+            var trainerExists = Convert.ToInt32(await ExecuteScalarAsync(
+                "SELECT COUNT(1) FROM Trainers WHERE LOWER(EmailId) = LOWER(@email)",
+                new SqlParameter("@email", email))) > 0;
+
+            if (!trainerExists)
+            {
+                const string trainerSql = @"
+                    INSERT INTO Trainers (Name, Qualification, Designation, TeachingExperience, IndustryExperience, TotalExperience, EmailId, ContactNo, IsActive)
+                    VALUES (@name, @qual, @desig, @teachExp, @indExp, @totExp, @email, @contact, 1);";
+                await ExecuteNonQueryAsync(trainerSql,
+                    new SqlParameter("@name", dto.Name),
+                    new SqlParameter("@qual", dto.Qualification ?? string.Empty),
+                    new SqlParameter("@desig", dto.Designation ?? string.Empty),
+                    new SqlParameter("@teachExp", dto.TeachingExperience ?? string.Empty),
+                    new SqlParameter("@indExp", dto.IndustryExperience ?? string.Empty),
+                    new SqlParameter("@totExp", dto.TotalExperience ?? string.Empty),
+                    new SqlParameter("@email", email),
+                    new SqlParameter("@contact", dto.ContactNo ?? string.Empty));
+            }
+            else
+            {
+                await ExecuteNonQueryAsync(@"
+                    UPDATE Trainers SET Name = @name, Qualification = @qual, Designation = @desig, TeachingExperience = @teachExp, IndustryExperience = @indExp, TotalExperience = @totExp, ContactNo = @contact
+                    WHERE LOWER(EmailId) = LOWER(@email)",
+                    new SqlParameter("@name", dto.Name),
+                    new SqlParameter("@qual", dto.Qualification ?? string.Empty),
+                    new SqlParameter("@desig", dto.Designation ?? string.Empty),
+                    new SqlParameter("@teachExp", dto.TeachingExperience ?? string.Empty),
+                    new SqlParameter("@indExp", dto.IndustryExperience ?? string.Empty),
+                    new SqlParameter("@totExp", dto.TotalExperience ?? string.Empty),
+                    new SqlParameter("@email", email),
+                    new SqlParameter("@contact", dto.ContactNo ?? string.Empty));
+            }
+        }
+
         return accountId;
     }
 
