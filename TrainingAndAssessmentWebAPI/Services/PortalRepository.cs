@@ -753,12 +753,13 @@ public sealed class PortalRepository
 
     public async Task<string> CreateAccountAsync(CreateAccountDto dto)
     {
-        var roleId = dto.Role.Equals("HOD", StringComparison.OrdinalIgnoreCase) ? 2
-            : dto.Role.Equals("Trainer", StringComparison.OrdinalIgnoreCase) ? 3
+        var role = dto.Role.Trim();
+        var roleId = role.Equals("HOD", StringComparison.OrdinalIgnoreCase) ? 2
+            : role.Equals("Trainer", StringComparison.OrdinalIgnoreCase) ? 3
             : 4;
 
-        var prefix = dto.Role.Equals("HOD", StringComparison.OrdinalIgnoreCase) ? "HOD"
-            : dto.Role.Equals("Trainer", StringComparison.OrdinalIgnoreCase) ? "TRN"
+        var prefix = role.Equals("HOD", StringComparison.OrdinalIgnoreCase) ? "HOD"
+            : role.Equals("Trainer", StringComparison.OrdinalIgnoreCase) ? "TRN"
             : "STD";
 
         var accountId = dto.AccountId;
@@ -769,7 +770,24 @@ public sealed class PortalRepository
             accountId = $"{prefix}{nextId:D3}";
         }
 
-        var defaultPass = string.IsNullOrWhiteSpace(dto.Password) ? "Atme@1234" : dto.Password;
+        string defaultPass;
+        if (role.Equals("HOD", StringComparison.OrdinalIgnoreCase))
+        {
+            defaultPass = string.IsNullOrWhiteSpace(dto.Password) ? "HOD" : dto.Password;
+        }
+        else if (role.Equals("Trainer", StringComparison.OrdinalIgnoreCase))
+        {
+            defaultPass = string.IsNullOrWhiteSpace(dto.Password) ? "TRAINER" : dto.Password;
+        }
+        else if (role.Equals("Student", StringComparison.OrdinalIgnoreCase))
+        {
+            defaultPass = string.IsNullOrWhiteSpace(dto.Password) ? (!string.IsNullOrWhiteSpace(dto.Usn) ? dto.Usn.Trim().ToUpperInvariant() : "STUDENT") : dto.Password;
+        }
+        else
+        {
+            defaultPass = string.IsNullOrWhiteSpace(dto.Password) ? "Atme@1234" : dto.Password;
+        }
+
         var hash = PasswordSecurity.Hash(defaultPass);
 
         const string sql = @"
@@ -784,6 +802,40 @@ public sealed class PortalRepository
             new SqlParameter("@email", dto.Email.Trim().ToLowerInvariant()),
             new SqlParameter("@contact", dto.ContactNo ?? string.Empty),
             new SqlParameter("@hash", hash));
+
+        if (role.Equals("Student", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(dto.Usn))
+        {
+            var usn = dto.Usn.Trim().ToUpperInvariant();
+            var exists = Convert.ToInt32(await ExecuteScalarAsync(
+                "SELECT COUNT(1) FROM Students WHERE LOWER(USN) = LOWER(@usn)",
+                new SqlParameter("@usn", usn))) > 0;
+
+            if (!exists)
+            {
+                const string studentSql = @"
+                    INSERT INTO Students (AccountId, USN, Name, CurrentSemester, EmailId, ContactNo, Status, CreatedAt)
+                    VALUES (@accountId, @usn, @name, @sem, @email, @contact, 'Active', SYSUTCDATETIME());";
+                await ExecuteNonQueryAsync(studentSql,
+                    new SqlParameter("@accountId", accountId),
+                    new SqlParameter("@usn", usn),
+                    new SqlParameter("@name", dto.Name),
+                    new SqlParameter("@sem", dto.CurrentSemester ?? "1st Semester"),
+                    new SqlParameter("@email", dto.Email.Trim().ToLowerInvariant()),
+                    new SqlParameter("@contact", dto.ContactNo ?? string.Empty));
+            }
+            else
+            {
+                await ExecuteNonQueryAsync(@"
+                    UPDATE Students SET AccountId = @accountId, Name = @name, CurrentSemester = @sem, EmailId = @email, ContactNo = @contact
+                    WHERE LOWER(USN) = LOWER(@usn)",
+                    new SqlParameter("@accountId", accountId),
+                    new SqlParameter("@usn", usn),
+                    new SqlParameter("@name", dto.Name),
+                    new SqlParameter("@sem", dto.CurrentSemester ?? "1st Semester"),
+                    new SqlParameter("@email", dto.Email.Trim().ToLowerInvariant()),
+                    new SqlParameter("@contact", dto.ContactNo ?? string.Empty));
+            }
+        }
 
         return accountId;
     }

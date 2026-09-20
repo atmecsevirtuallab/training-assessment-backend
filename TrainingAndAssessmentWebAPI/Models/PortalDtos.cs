@@ -31,7 +31,9 @@ public sealed record CreateAccountDto(
     string DepartmentOrBatch,
     string Email,
     string ContactNo,
-    string? Password);
+    string? Password = null,
+    string? Usn = null,
+    string? CurrentSemester = null);
 
 public sealed record StudentDto(
     int StudentId,

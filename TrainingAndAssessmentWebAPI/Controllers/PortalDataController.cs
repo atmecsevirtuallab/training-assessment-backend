@@ -132,8 +132,18 @@ public sealed class PortalDataController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(dto.Role) || string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Email))
             return BadRequest(new { message = "Role, Name, and Email are required." });
+
+        if (dto.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(dto.Usn))
+            return BadRequest(new { message = "USN is required when creating a Student account." });
+
         var accountId = await _repository.CreateAccountAsync(dto);
-        return Ok(new { accountId, message = $"Account created successfully for {dto.Name} ({accountId}). Default password: {dto.Password ?? "Atme@1234"}" });
+        var defaultPass = !string.IsNullOrWhiteSpace(dto.Password) ? dto.Password
+            : dto.Role.Equals("HOD", StringComparison.OrdinalIgnoreCase) ? "HOD"
+            : dto.Role.Equals("Trainer", StringComparison.OrdinalIgnoreCase) ? "TRAINER"
+            : dto.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) ? (dto.Usn?.Trim().ToUpperInvariant() ?? "STUDENT")
+            : "Atme@1234";
+
+        return Ok(new { accountId, message = $"Account created successfully for {dto.Name} ({accountId}). Default password: {defaultPass}" });
     }
 
     [HttpGet("students")]
