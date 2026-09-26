@@ -52,9 +52,24 @@ namespace TrainingAndAssessmentWebAPI
 
             var app = builder.Build();
 
+            // Auto-create/ensure DB schema is ready on startup
+            using (var scope = app.Services.CreateScope())
+            {
+                try
+                {
+                    var dbContext = scope.ServiceProvider.GetRequiredService<TrainingAssessmentDbContext>();
+                    dbContext.Database.EnsureCreated();
+                }
+                catch (Exception ex)
+                {
+                    app.Logger.LogWarning(ex, "Database connection check notice: {Message}", ex.Message);
+                }
+            }
+
             // Configure the HTTP request pipeline.
             if (app.Environment.IsDevelopment())
             {
+                app.UseDeveloperExceptionPage();
                 app.MapOpenApi();
                 app.UseSwagger();
                 app.UseSwaggerUI();
@@ -75,4 +90,3 @@ namespace TrainingAndAssessmentWebAPI
         }
     }
 }
-

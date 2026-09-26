@@ -212,6 +212,15 @@ CREATE TABLE [AssessmentSubmissions]
 )
 GO
 
+CREATE TABLE [AssessmentBatchAccess]
+(
+    [AssessmentId] VARCHAR(30) NOT NULL CONSTRAINT [FK_AssessmentBatchAccess_Assessments] REFERENCES [Assessments]([AssessmentId]) ON DELETE CASCADE,
+    [BatchId] INT NOT NULL CONSTRAINT [FK_AssessmentBatchAccess_Batches] REFERENCES [Batches]([BatchId]) ON DELETE CASCADE,
+    [GrantedAt] DATETIME2(0) NOT NULL CONSTRAINT [DF_AssessmentBatchAccess_GrantedAt] DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT [PK_AssessmentBatchAccess] PRIMARY KEY ([AssessmentId], [BatchId])
+)
+GO
+
 CREATE TABLE [LoginHistory]
 (
     [LoginHistoryId] BIGINT IDENTITY(1,1) CONSTRAINT [PK_LoginHistory] PRIMARY KEY,
@@ -385,7 +394,10 @@ GO
 
 INSERT INTO [Assessments] ([AssessmentId], [TrainingId], [Title], [Description], [AssessmentType], [Status], [MaxScore], [PublishedAt]) VALUES
 ('ASM-001', 1, 'Konnect Quiz', 'Quiz on array fundamentals.', 'Quiz', 'Open', '20', '2026-07-24T10:00:00'),
-('ASM-002', 1, 'Programming Exercise-1', 'Solve placement-style array problems.', 'Programming Assignment', 'Open', 'Passed', '2026-07-24T10:15:00')
+('ASM-002', 1, 'Programming Exercise-1', 'Solve placement-style array problems.', 'Programming Assignment', 'Open', 'Passed', '2026-07-24T10:15:00'),
+('Assessment-1', 1, 'DSA_Pre-Assessment_Quiz', '50-question pre-assessment quiz for evaluating DSA readiness.', 'Quiz', 'Closed', '50 Marks', NULL),
+('Assessment-2', 1, 'DSA Pre-assessment_Programming', 'Two programming questions: 15 minutes and 10 marks per question.', 'Programming Assignment', 'Closed', '20 Marks', NULL),
+('Assessment-3', 1, 'DSA Descriptive Pre-assessment', 'Five descriptive questions carrying 6 marks each.', 'Descriptive Assignment', 'Closed', '30 Marks', NULL)
 GO
 
 INSERT INTO [Attendance] ([SessionId], [StudentId], [IsPresent], [Remarks], [RecordedAt]) VALUES

@@ -275,6 +275,45 @@ public sealed class PortalDataController : ControllerBase
     [HttpGet("batches")]
     public async Task<IActionResult> GetBatches() => Ok(await _repository.GetBatchesAsync());
 
+    [HttpGet("assessments/student/{studentId:int}")]
+    public async Task<IActionResult> GetStudentAssessments(int studentId) => Ok(await _repository.GetStudentAssessmentsAsync(studentId));
+
+    [HttpGet("assessments/access")]
+    public async Task<IActionResult> GetAssessmentBatchAccess() => Ok(await _repository.GetAssessmentBatchAccessAsync());
+
+    [HttpPost("assessments/{assessmentId}/grant-access")]
+    public async Task<IActionResult> GrantAssessmentAccess(string assessmentId, [FromBody] AssessmentBatchAccessRequestDto dto)
+    {
+        await _repository.GrantAssessmentAccessAsync(assessmentId, dto.Batches ?? []);
+        return Ok(new { message = "Assessment access granted." });
+    }
+
+    [HttpPost("assessments/{assessmentId}/revoke-access")]
+    public async Task<IActionResult> RevokeAssessmentAccess(string assessmentId, [FromBody] AssessmentBatchAccessRequestDto dto)
+    {
+        await _repository.RevokeAssessmentAccessAsync(assessmentId, dto.Batches ?? []);
+        return Ok(new { message = "Assessment access revoked." });
+    }
+
+    [HttpPost("assessments/{assessmentId}/submit-result")]
+    public async Task<IActionResult> SaveAssessmentSubmission(string assessmentId, [FromBody] SaveAssessmentSubmissionDto dto)
+    {
+        if (!await _repository.SaveAssessmentSubmissionAsync(assessmentId, dto))
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = "Assessment access has not been granted for this student's batch." });
+        return Ok(new { message = "Assessment submission saved." });
+    }
+
+    [HttpGet("assessments/{assessmentId}/submissions")]
+    public async Task<IActionResult> GetAssessmentSubmissions(string assessmentId) =>
+        Ok(await _repository.GetAssessmentSubmissionsAsync(assessmentId));
+
+    [HttpDelete("assessments/{assessmentId}/submissions/{studentId:int}")]
+    public async Task<IActionResult> ResetAssessmentSubmission(string assessmentId, int studentId)
+    {
+        await _repository.ResetAssessmentSubmissionAsync(assessmentId, studentId);
+        return Ok(new { message = "The assessment has been enabled again for this student." });
+    }
+
     [HttpPost("batches")]
     public async Task<IActionResult> CreateBatch([FromBody] SaveBatchDto dto)
     {
@@ -331,6 +370,11 @@ public sealed class PortalDataController : ControllerBase
         return Ok(new { message = "Feedback submitted successfully." });
     }
 
+    [HttpGet("feedbacks/{feedbackId}/submissions")]
+    public async Task<IActionResult> GetFeedbackSubmissions(string feedbackId, [FromQuery] string? batch = null) =>
+        Ok(await _repository.GetFeedbackSubmissionsAsync(feedbackId, batch));
+
+
     [HttpGet("login-history")]
     public async Task<IActionResult> GetLoginHistory([FromQuery] string? role = null, [FromQuery] string? accountId = null) =>
         Ok(await _repository.GetLoginHistoryAsync(role, accountId));
@@ -372,6 +416,32 @@ public sealed class PortalDataController : ControllerBase
     {
         await _repository.SaveProgrammingExerciseAsync(sessionId, dto with { ItemLabel = itemLabel });
         return Ok(new { message = "Successfully Saved" });
+    }
+
+    [HttpGet("sessions/{sessionId}/descriptive-assignments/{itemLabel}")]
+    public async Task<IActionResult> GetDescriptiveAssignment(string sessionId, string itemLabel) =>
+        Ok(await _repository.GetDescriptiveAssignmentAsync(sessionId, itemLabel));
+
+    [HttpPut("sessions/{sessionId}/descriptive-assignments/{itemLabel}")]
+    public async Task<IActionResult> SaveDescriptiveAssignment(string sessionId, string itemLabel, [FromBody] DescriptiveAssignmentDto dto)
+    {
+        await _repository.SaveDescriptiveAssignmentAsync(sessionId, dto with { ItemLabel = itemLabel });
+        return Ok(new { message = "Successfully Saved" });
+    }
+
+    [HttpGet("sessions/{sessionId}/attendance")]
+    public async Task<IActionResult> GetSessionAttendance(string sessionId, [FromQuery] string batch)
+    {
+        var attendance = await _repository.GetSessionAttendanceAsync(sessionId, batch);
+        if (attendance is null) return NotFound(new { message = "Attendance not recorded yet." });
+        return Ok(attendance);
+    }
+
+    [HttpPut("sessions/{sessionId}/attendance")]
+    public async Task<IActionResult> SaveSessionAttendance(string sessionId, [FromQuery] string batch, [FromBody] SaveSessionAttendanceDto dto)
+    {
+        await _repository.SaveSessionAttendanceAsync(dto with { SessionId = sessionId, Batch = batch });
+        return Ok(new { message = "Attendance saved successfully" });
     }
 
     [HttpPost("programming/execute")]

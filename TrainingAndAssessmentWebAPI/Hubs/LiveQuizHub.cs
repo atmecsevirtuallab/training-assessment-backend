@@ -22,6 +22,7 @@ public sealed class LiveQuizHub(LiveQuizCoordinator coordinator) : Hub
 
     public Task StartLobby(string code) => coordinator.StartLobbyAsync(code);
     public Task StartQuestion(string code) => coordinator.StartQuestionAsync(code);
+    public Task SelectQuestion(string code, int questionIndex) => coordinator.StartQuestionAsync(code, questionIndex);
     public Task PauseQuiz(string code) => coordinator.PauseAsync(code);
     public Task NextQuestion(string code) => coordinator.NextQuestionAsync(code);
     public Task SubmitAnswer(SubmitLiveQuizAnswerDto dto) => coordinator.SubmitAnswerAsync(dto);

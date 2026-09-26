@@ -17,6 +17,8 @@ public sealed class LiveQuizCoordinator : IDisposable
         public int? SelectedOption { get; set; }
         public int CurrentScore { get; set; }
         public int CumulativeScore { get; set; }
+        public long? ResponseMilliseconds { get; set; }
+        public long TotalResponseMilliseconds { get; set; }
     }
 
     private sealed class Run(string runId, string code, CreateLiveQuizDto request)
@@ -30,6 +32,7 @@ public sealed class LiveQuizCoordinator : IDisposable
         public int SecondsRemaining { get; set; }
         public ConcurrentDictionary<int, Participant> Participants { get; } = new();
         public CancellationTokenSource? TimerCancellation { get; set; }
+        public DateTimeOffset QuestionStartedAt { get; set; }
         public object SyncRoot { get; } = new();
     }
 
@@ -86,15 +89,24 @@ public sealed class LiveQuizCoordinator : IDisposable
         StartTimer(run, () => StartQuestionAsync(code));
     }
 
-    public async Task StartQuestionAsync(string code)
+    public Task StartQuestionAsync(string code) => StartQuestionAsync(code, null);
+
+    public async Task StartQuestionAsync(string code, int? questionIndex)
     {
         var run = Required(code);
         CancelTimer(run);
         lock (run.SyncRoot)
         {
+            if (questionIndex.HasValue)
+            {
+                if (questionIndex.Value < 0 || questionIndex.Value >= run.Request.Questions.Count)
+                    throw new HubException("Invalid quiz question number.");
+                run.CurrentQuestionIndex = questionIndex.Value;
+            }
             run.Stage = "Question"; run.Status = "Running";
             run.SecondsRemaining = CurrentQuestion(run).AnswerTimeSeconds;
-            foreach (var participant in run.Participants.Values) { participant.SelectedOption = null; participant.CurrentScore = 0; }
+            run.QuestionStartedAt = DateTimeOffset.UtcNow;
+            foreach (var participant in run.Participants.Values) { participant.SelectedOption = null; participant.CurrentScore = 0; participant.ResponseMilliseconds = null; }
         }
         await PersistStateAsync(run);
         await BroadcastAsync(run);
@@ -110,6 +122,7 @@ public sealed class LiveQuizCoordinator : IDisposable
         {
             if (participant.SelectedOption.HasValue) return;
             participant.SelectedOption = dto.OptionIndex;
+            participant.ResponseMilliseconds = Math.Max(0, (long)(DateTimeOffset.UtcNow - run.QuestionStartedAt).TotalMilliseconds);
         }
         await BroadcastAsync(run);
     }
@@ -139,12 +152,14 @@ public sealed class LiveQuizCoordinator : IDisposable
                 : participant.SelectedOption == question.CorrectOptionIndex;
             participant.CurrentScore = correct ? question.Marks : 0;
             participant.CumulativeScore += participant.CurrentScore;
-            await ExecuteAsync(@"INSERT INTO LiveQuizAnswers(RunId,StudentId,QuestionIndex,SelectedOptionIndex,IsCorrect,Score,SubmittedAt)
-                VALUES(@runId,@studentId,@question,@option,@correct,@score,SYSUTCDATETIME())",
+            if (participant.ResponseMilliseconds.HasValue) participant.TotalResponseMilliseconds += participant.ResponseMilliseconds.Value;
+            await ExecuteAsync(@"INSERT INTO LiveQuizAnswers(RunId,StudentId,QuestionIndex,SelectedOptionIndex,IsCorrect,Score,ResponseMilliseconds,SubmittedAt)
+                VALUES(@runId,@studentId,@question,@option,@correct,@score,@responseMs,SYSUTCDATETIME())",
                 new("@runId", run.RunId), new("@studentId", participant.StudentId), new("@question", run.CurrentQuestionIndex),
-                new("@option", (object?)participant.SelectedOption ?? DBNull.Value), new("@correct", correct), new("@score", participant.CurrentScore));
-            await ExecuteAsync("UPDATE LiveQuizParticipants SET CumulativeScore=@score WHERE RunId=@runId AND StudentId=@studentId",
-                new("@score", participant.CumulativeScore), new("@runId", run.RunId), new("@studentId", participant.StudentId));
+                new("@option", (object?)participant.SelectedOption ?? DBNull.Value), new("@correct", correct), new("@score", participant.CurrentScore),
+                new("@responseMs", (object?)participant.ResponseMilliseconds ?? DBNull.Value));
+            await ExecuteAsync("UPDATE LiveQuizParticipants SET CumulativeScore=@score,TotalResponseMilliseconds=@totalMs WHERE RunId=@runId AND StudentId=@studentId",
+                new("@score", participant.CumulativeScore), new("@totalMs", participant.TotalResponseMilliseconds), new("@runId", run.RunId), new("@studentId", participant.StudentId));
         }
         run.Stage = "Results"; run.Status = "Completed"; run.SecondsRemaining = 0;
         await PersistStateAsync(run); await BroadcastAsync(run);
@@ -183,8 +198,8 @@ public sealed class LiveQuizCoordinator : IDisposable
         var question = run.Stage is "Question" or "Results" ? CurrentQuestion(run) : null;
         var view = question is null ? null : new LiveQuizQuestionView(run.CurrentQuestionIndex, question.QuestionLabel,
             question.QuestionText, question.Options, question.AnswerTimeSeconds, question.Marks);
-        var participants = run.Participants.Values.OrderByDescending(x => x.CumulativeScore).ThenBy(x => x.Name)
-            .Select(x => new LiveQuizParticipantView(x.StudentId, x.Usn, x.Name, x.SelectedOption.HasValue, x.CurrentScore, x.CumulativeScore)).ToList();
+        var participants = run.Participants.Values.OrderByDescending(x => x.CumulativeScore).ThenBy(x => x.TotalResponseMilliseconds).ThenBy(x => x.Name)
+            .Select(x => new LiveQuizParticipantView(x.StudentId, x.Usn, x.Name, x.SelectedOption.HasValue, x.CurrentScore, x.CumulativeScore, x.ResponseMilliseconds, x.TotalResponseMilliseconds)).ToList();
         return new(run.RunId, run.Code, run.Request.SessionId, run.Request.Batch, run.Stage, run.Status,
             run.CurrentQuestionIndex, run.SecondsRemaining, participants.Count(x => x.Answered), view, participants);
     }
@@ -195,8 +210,10 @@ public sealed class LiveQuizCoordinator : IDisposable
 
     private Task EnsureTablesAsync() => ExecuteAsync(@"
         IF OBJECT_ID('dbo.LiveQuizRuns','U') IS NULL CREATE TABLE dbo.LiveQuizRuns(RunId NVARCHAR(32) PRIMARY KEY,QuizCode NVARCHAR(6) NOT NULL UNIQUE,SessionId NVARCHAR(30) NOT NULL,Batch NVARCHAR(100) NOT NULL,TrainerName NVARCHAR(150) NOT NULL,QuestionsJson NVARCHAR(MAX) NOT NULL,Stage NVARCHAR(20) NOT NULL,Status NVARCHAR(20) NOT NULL,CurrentQuestionIndex INT NOT NULL,SecondsRemaining INT NOT NULL,CreatedAt DATETIME2 NOT NULL,UpdatedAt DATETIME2 NULL);
-        IF OBJECT_ID('dbo.LiveQuizParticipants','U') IS NULL CREATE TABLE dbo.LiveQuizParticipants(RunId NVARCHAR(32) NOT NULL,StudentId INT NOT NULL,Usn NVARCHAR(30) NOT NULL,StudentName NVARCHAR(150) NOT NULL,JoinedAt DATETIME2 NOT NULL,CumulativeScore INT NOT NULL,CONSTRAINT PK_LiveQuizParticipants PRIMARY KEY(RunId,StudentId));
-        IF OBJECT_ID('dbo.LiveQuizAnswers','U') IS NULL CREATE TABLE dbo.LiveQuizAnswers(AnswerId BIGINT IDENTITY(1,1) PRIMARY KEY,RunId NVARCHAR(32) NOT NULL,StudentId INT NOT NULL,QuestionIndex INT NOT NULL,SelectedOptionIndex INT NULL,IsCorrect BIT NOT NULL,Score INT NOT NULL,SubmittedAt DATETIME2 NOT NULL,CONSTRAINT UQ_LiveQuizAnswers UNIQUE(RunId,StudentId,QuestionIndex));");
+        IF OBJECT_ID('dbo.LiveQuizParticipants','U') IS NULL CREATE TABLE dbo.LiveQuizParticipants(RunId NVARCHAR(32) NOT NULL,StudentId INT NOT NULL,Usn NVARCHAR(30) NOT NULL,StudentName NVARCHAR(150) NOT NULL,JoinedAt DATETIME2 NOT NULL,CumulativeScore INT NOT NULL,TotalResponseMilliseconds BIGINT NOT NULL DEFAULT 0,CONSTRAINT PK_LiveQuizParticipants PRIMARY KEY(RunId,StudentId));
+        IF COL_LENGTH('dbo.LiveQuizParticipants','TotalResponseMilliseconds') IS NULL ALTER TABLE dbo.LiveQuizParticipants ADD TotalResponseMilliseconds BIGINT NOT NULL CONSTRAINT DF_LiveQuizParticipants_TotalResponseMilliseconds DEFAULT 0;
+        IF OBJECT_ID('dbo.LiveQuizAnswers','U') IS NULL CREATE TABLE dbo.LiveQuizAnswers(AnswerId BIGINT IDENTITY(1,1) PRIMARY KEY,RunId NVARCHAR(32) NOT NULL,StudentId INT NOT NULL,QuestionIndex INT NOT NULL,SelectedOptionIndex INT NULL,IsCorrect BIT NOT NULL,Score INT NOT NULL,ResponseMilliseconds BIGINT NULL,SubmittedAt DATETIME2 NOT NULL,CONSTRAINT UQ_LiveQuizAnswers UNIQUE(RunId,StudentId,QuestionIndex));
+        IF COL_LENGTH('dbo.LiveQuizAnswers','ResponseMilliseconds') IS NULL ALTER TABLE dbo.LiveQuizAnswers ADD ResponseMilliseconds BIGINT NULL;");
 
     private async Task ExecuteAsync(string sql, params SqlParameter[] parameters)
     {

@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 
 namespace TrainingAndAssessmentDataAccessLayer
 {
@@ -34,11 +34,27 @@ namespace TrainingAndAssessmentDataAccessLayer
         {
             base.OnModelCreating(modelBuilder);
 
-            modelBuilder.Entity<TrainingProgramTrainer>()
-                .HasKey(tpt => new { tpt.TrainingId, tpt.TrainerId });
+            modelBuilder.Entity<TrainingProgramTrainer>(entity =>
+            {
+                entity.HasKey(tpt => new { tpt.TrainingId, tpt.TrainerId });
+                entity.HasOne(tpt => tpt.TrainingProgram)
+                      .WithMany()
+                      .HasForeignKey(tpt => tpt.TrainingId);
+                entity.HasOne(tpt => tpt.Trainer)
+                      .WithMany()
+                      .HasForeignKey(tpt => tpt.TrainerId);
+            });
 
-            modelBuilder.Entity<BatchStudent>()
-                .HasKey(bs => new { bs.BatchId, bs.StudentId });
+            modelBuilder.Entity<BatchStudent>(entity =>
+            {
+                entity.HasKey(bs => new { bs.BatchId, bs.StudentId });
+                entity.HasOne(bs => bs.Batch)
+                      .WithMany()
+                      .HasForeignKey(bs => bs.BatchId);
+                entity.HasOne(bs => bs.Student)
+                      .WithMany()
+                      .HasForeignKey(bs => bs.StudentId);
+            });
 
             modelBuilder.Entity<VwLoginHistoryWithTotals>()
                 .HasNoKey()

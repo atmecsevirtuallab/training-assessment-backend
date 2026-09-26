@@ -200,6 +200,35 @@ public sealed record SendOtpRequestDto(string Email);
 public sealed record VerifyOtpRequestDto(string Email, string Otp);
 public sealed record ResetPasswordOtpRequestDto(string Email, string ResetToken, string NewPassword);
 public sealed record CompleteStudentProfileDto(string AccountId, string Email, string NewPassword);
+
+public sealed record AssessmentBatchAccessRequestDto(string[] Batches);
+public sealed record AssessmentBatchGrantDto(string AssessmentId, string Batch, string TrainingProgram, DateTime GrantedAt);
+
+public sealed record StudentAssessmentDto(
+    string AssessmentId,
+    string Title,
+    string Description,
+    string AssessmentType,
+    string Status,
+    string? MaxScore,
+    DateTime? PublishedAt,
+    string TrainingProgram,
+    bool CanAttempt,
+    bool Attempted,
+    string? Score,
+    DateTime? SubmittedAt);
+
+public sealed record SaveAssessmentSubmissionDto(int StudentId, string Score);
+public sealed record AssessmentSubmissionDto(
+    long SubmissionId,
+    string AssessmentId,
+    int StudentId,
+    string Usn,
+    string StudentName,
+    string Batch,
+    string SubmissionStatus,
+    DateTime? SubmittedAt,
+    string? Score);
 public sealed record AuthenticatedUserDto(
     string AccountId,
     string Role,
@@ -233,6 +262,13 @@ public sealed record SessionQuizQuestionDto(
 
 public sealed record ProgrammingTestCaseDto(string TestCaseId, string Input, string Output);
 public sealed record ProgrammingExerciseDto(string ItemLabel, string Question, List<ProgrammingTestCaseDto> TestCases);
+public sealed record DescriptiveQuestionDto(
+    string QuestionLabel,
+    string AnswerLabel,
+    string QuestionText,
+    string AnswerText,
+    string? TestAnswerText);
+public sealed record DescriptiveAssignmentDto(string ItemLabel, List<DescriptiveQuestionDto> Questions);
 public sealed record ExecuteProgramDto(string Language, string Code, List<ProgrammingTestCaseDto> TestCases);
 public sealed record SubmitProgramDto(
     string SessionId,
@@ -248,3 +284,17 @@ public sealed record InteractiveProgramInputDto(string Input);
 public sealed record InteractiveProgramResponseDto(string? SessionId, string Output, string Error, bool IsRunning);
 public sealed record ExecutionResultDto(string TestCaseId, string Input, string ExpectedOutput, string ActualOutput, string Status);
 public sealed record ProgramExecutionResponseDto(string? CompileError, List<ExecutionResultDto> Results);
+
+public sealed record FeedbackSubmissionRowDto(
+    long SlNo,
+    string Usn,
+    string Name,
+    string Attendance,
+    string FeedbackStatus,
+    string Considered,
+    Dictionary<string, string> Responses,
+    string SubmittedDateTime);
+
+public sealed record SessionAttendanceRecordDto(int StudentId, bool Present, bool Absent, string? Remarks);
+public sealed record SaveSessionAttendanceDto(string SessionId, string Batch, string RecordedAt, List<SessionAttendanceRecordDto> Records);
+
