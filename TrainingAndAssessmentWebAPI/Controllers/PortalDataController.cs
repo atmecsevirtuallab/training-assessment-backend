@@ -244,7 +244,7 @@ public sealed class PortalDataController : ControllerBase
     }
 
     [HttpGet("trainers")]
-    public async Task<IActionResult> GetTrainers() => Ok(await _repository.GetTrainersAsync());
+    public async Task<IActionResult> GetTrainers([FromQuery] string? department = null) => Ok(await _repository.GetTrainersAsync(department));
 
     [HttpGet("trainings")]
     public async Task<IActionResult> GetTrainings() => Ok(await _repository.GetTrainingsAsync());
@@ -273,7 +273,7 @@ public sealed class PortalDataController : ControllerBase
     }
 
     [HttpGet("batches")]
-    public async Task<IActionResult> GetBatches() => Ok(await _repository.GetBatchesAsync());
+    public async Task<IActionResult> GetBatches([FromQuery] string? department = null) => Ok(await _repository.GetBatchesAsync(department));
 
     [HttpGet("assessments/student/{studentId:int}")]
     public async Task<IActionResult> GetStudentAssessments(int studentId) => Ok(await _repository.GetStudentAssessmentsAsync(studentId));
@@ -381,6 +381,23 @@ public sealed class PortalDataController : ControllerBase
 
     [HttpGet("reports")]
     public async Task<IActionResult> GetReports() => Ok(await _repository.GetReportsAsync());
+
+    [HttpGet("sessions")]
+    public async Task<IActionResult> GetSessions() => Ok(await _repository.GetPortalSessionsAsync());
+
+    [HttpPut("sessions/{sessionId}")]
+    public async Task<IActionResult> SaveSession(string sessionId, [FromBody] SavePortalSessionDto dto)
+    {
+        await _repository.SavePortalSessionAsync(dto with { SessionId = sessionId });
+        return Ok(new { message = "Session saved successfully." });
+    }
+
+    [HttpDelete("sessions/{sessionId}")]
+    public async Task<IActionResult> DeleteSession(string sessionId)
+    {
+        var deleted = await _repository.DeletePortalSessionAsync(sessionId);
+        return deleted ? Ok(new { message = "Session deleted successfully." }) : NotFound(new { message = "Session not found." });
+    }
 
     [HttpGet("sessions/{sessionId}/notes")]
     public async Task<IActionResult> GetSessionNotes(string sessionId) =>

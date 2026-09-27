@@ -86,7 +86,9 @@ CREATE TABLE [TrainingPrograms]
     [Mode] VARCHAR(20) CONSTRAINT [CK_TrainingPrograms_Mode] CHECK ([Mode] IN ('Online', 'Offline', 'Hybrid')) NOT NULL,
     [StartDate] DATE NOT NULL,
     [EndDate] DATE NOT NULL,
-    [Status] VARCHAR(20) CONSTRAINT [CK_TrainingPrograms_Status] CHECK ([Status] IN ('Active', 'Closed')) NOT NULL DEFAULT 'Active'
+    [Status] VARCHAR(20) CONSTRAINT [CK_TrainingPrograms_Status] CHECK ([Status] IN ('Active', 'Closed')) NOT NULL DEFAULT 'Active',
+    [CreatedByAccountId] VARCHAR(30) NULL,
+    [Department] VARCHAR(200) NULL
 )
 GO
 
@@ -104,7 +106,16 @@ CREATE TABLE [Batches]
     [BatchCode] VARCHAR(30) CONSTRAINT [UQ_Batches_BatchCode] UNIQUE NOT NULL,
     [BatchName] VARCHAR(100) NOT NULL,
     [TrainingId] INT CONSTRAINT [FK_Batches_TrainingPrograms] REFERENCES [TrainingPrograms]([TrainingId]) NOT NULL,
-    [IsActive] BIT CONSTRAINT [DF_Batches_IsActive] DEFAULT 1 NOT NULL
+    [IsActive] BIT CONSTRAINT [DF_Batches_IsActive] DEFAULT 1 NOT NULL,
+    [Department] VARCHAR(200) NULL
+)
+GO
+
+CREATE TABLE [TrainingProgramBatches]
+(
+    [TrainingId] INT CONSTRAINT [FK_TPB_TrainingPrograms] REFERENCES [TrainingPrograms]([TrainingId]) ON DELETE CASCADE NOT NULL,
+    [BatchId] INT CONSTRAINT [FK_TPB_Batches] REFERENCES [Batches]([BatchId]) NOT NULL,
+    CONSTRAINT [PK_TrainingProgramBatches] PRIMARY KEY ([TrainingId], [BatchId])
 )
 GO
 
@@ -173,7 +184,11 @@ CREATE TABLE [TrainingSessions]
     [StartTime] TIME(0) NOT NULL,
     [EndTime] TIME(0) NOT NULL,
     [Venue] VARCHAR(150) NOT NULL,
-    [Status] VARCHAR(20) CONSTRAINT [CK_TrainingSessions_Status] CHECK ([Status] IN ('Open', 'Closed')) NOT NULL DEFAULT 'Open'
+    [Status] VARCHAR(20) CONSTRAINT [CK_TrainingSessions_Status] CHECK ([Status] IN ('Open', 'Closed')) NOT NULL DEFAULT 'Open',
+    [BatchesJson] NVARCHAR(MAX) NULL,
+    [AssessmentsJson] NVARCHAR(MAX) NULL,
+    [BatchSchedulesJson] NVARCHAR(MAX) NULL,
+    [BatchAccessControlJson] NVARCHAR(MAX) NULL
 )
 GO
 
@@ -344,6 +359,10 @@ INSERT INTO [Batches] ([BatchCode], [BatchName], [TrainingId], [IsActive]) VALUE
 ('TAB-005', 'DSA-B2', 1, 1),
 ('TAB-006', 'DSA-C1', 1, 1),
 ('TAB-007', 'DSA-C2', 1, 1)
+GO
+
+INSERT INTO [TrainingProgramBatches] ([TrainingId], [BatchId])
+SELECT [TrainingId], [BatchId] FROM [Batches]
 GO
 
 INSERT INTO [BatchStudents] ([BatchId], [StudentId]) VALUES (1,1), (1,2), (2,1), (2,2), (2,3)

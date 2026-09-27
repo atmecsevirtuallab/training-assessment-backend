@@ -197,9 +197,39 @@ public sealed class PortalRepository
             reader.GetString("ContactNo"),
             reader.GetString("Status")));
 
-    public Task<List<TrainerDto>> GetTrainersAsync() => QueryAsync(@"
-        SELECT TrainerId, Name, Qualification, Designation, TeachingExperience, IndustryExperience, TotalExperience, EmailId, ContactNo, IsActive
-        FROM Trainers ORDER BY TrainerId", reader => new TrainerDto(
+    private Task<int> EnsureTrainingOwnershipSchemaAsync() => ExecuteNonQueryAsync(@"
+        IF COL_LENGTH('dbo.TrainingPrograms','CreatedByAccountId') IS NULL
+            ALTER TABLE dbo.TrainingPrograms ADD CreatedByAccountId VARCHAR(30) NULL;
+        IF COL_LENGTH('dbo.TrainingPrograms','Department') IS NULL
+            ALTER TABLE dbo.TrainingPrograms ADD Department VARCHAR(200) NULL;
+        IF COL_LENGTH('dbo.Batches','Department') IS NULL
+            ALTER TABLE dbo.Batches ADD Department VARCHAR(200) NULL;
+        IF OBJECT_ID('dbo.TrainingProgramBatches','U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.TrainingProgramBatches(
+                TrainingId INT NOT NULL REFERENCES dbo.TrainingPrograms(TrainingId) ON DELETE CASCADE,
+                BatchId INT NOT NULL REFERENCES dbo.Batches(BatchId),
+                CONSTRAINT PK_TrainingProgramBatches PRIMARY KEY(TrainingId,BatchId));
+            INSERT INTO dbo.TrainingProgramBatches(TrainingId,BatchId)
+            SELECT TrainingId,BatchId FROM dbo.Batches;
+        END;
+        DECLARE @defaultDepartment VARCHAR(200) = (
+            SELECT TOP 1 a.DepartmentOrBatch FROM dbo.Accounts a
+            INNER JOIN dbo.Roles r ON r.RoleId=a.RoleId
+            WHERE r.RoleName='Trainer' AND a.Status='Active' ORDER BY a.AccountId);
+        SET @defaultDepartment=ISNULL(NULLIF(@defaultDepartment,''),'Unassigned');
+        UPDATE dbo.TrainingPrograms SET Department=@defaultDepartment WHERE Department IS NULL OR Department='';
+        UPDATE dbo.Batches SET Department=@defaultDepartment WHERE Department IS NULL OR Department='';");
+
+    public async Task<List<TrainerDto>> GetTrainersAsync(string? department = null)
+    {
+        await EnsureTrainingOwnershipSchemaAsync();
+        return await QueryAsync(@"
+        SELECT DISTINCT t.TrainerId, t.Name, t.Qualification, t.Designation, t.TeachingExperience, t.IndustryExperience,
+               t.TotalExperience, t.EmailId, t.ContactNo, t.IsActive, ISNULL(a.DepartmentOrBatch,'') AS Department
+        FROM Trainers t LEFT JOIN Accounts a ON (a.AccountId=t.AccountId OR LOWER(a.Email)=LOWER(t.EmailId) OR a.Name=t.Name)
+        WHERE t.IsActive=1 AND (@department IS NULL OR @department='' OR a.DepartmentOrBatch=@department)
+        ORDER BY t.TrainerId", reader => new TrainerDto(
             reader.GetInt32("TrainerId"),
             reader.GetString("Name"),
             reader.GetString("Qualification"),
@@ -209,13 +239,18 @@ public sealed class PortalRepository
             reader.GetString("TotalExperience"),
             reader.GetString("EmailId"),
             reader.GetString("ContactNo"),
-            reader.GetBoolean("IsActive")));
+            reader.GetBoolean("IsActive"),
+            reader.GetString("Department")), new SqlParameter("@department", (object?)department ?? DBNull.Value));
+    }
 
-    public Task<List<TrainingProgramDto>> GetTrainingsAsync() => QueryAsync(@"
+    public async Task<List<TrainingProgramDto>> GetTrainingsAsync()
+    {
+        await EnsureTrainingOwnershipSchemaAsync();
+        return await QueryAsync(@"
         SELECT tp.TrainingId, tp.TrainingType, tp.Objectives, tp.Outcome, tp.TargetAudience, tp.AcademicYear, tp.Duration, tp.Mode,
                tp.StartDate, tp.EndDate, tp.Status,
                ISNULL(STRING_AGG(CAST(tr.Name AS varchar(max)), ', '), '') AS Trainers,
-               ISNULL((SELECT STRING_AGG(CAST(b.BatchName AS varchar(max)), ', ') FROM Batches b WHERE b.TrainingId = tp.TrainingId), '') AS Batches
+               ISNULL((SELECT STRING_AGG(CAST(b.BatchName AS varchar(max)), ', ') FROM TrainingProgramBatches tpb INNER JOIN Batches b ON b.BatchId=tpb.BatchId WHERE tpb.TrainingId = tp.TrainingId), '') AS Batches
         FROM TrainingPrograms tp
         LEFT JOIN TrainingProgramTrainers tpt ON tpt.TrainingId = tp.TrainingId
         LEFT JOIN Trainers tr ON tr.TrainerId = tpt.TrainerId
@@ -234,16 +269,21 @@ public sealed class PortalRepository
             reader.GetString("Status"),
             reader.GetString("Trainers"),
             reader.GetString("Batches")));
+    }
 
-    public Task<List<BatchDto>> GetBatchesAsync() => QueryAsync(@"
+    public async Task<List<BatchDto>> GetBatchesAsync(string? department = null)
+    {
+        await EnsureTrainingOwnershipSchemaAsync();
+        return await QueryAsync(@"
         SELECT b.BatchId, b.BatchCode, b.BatchName, tp.TrainingType,
                COUNT(bs.StudentId) AS Strength, b.IsActive,
-               ISNULL(STRING_AGG(CAST(s.Name AS varchar(max)), ', '), '') AS Students
+               ISNULL(STRING_AGG(CAST(s.Name AS varchar(max)), ', '), '') AS Students, ISNULL(b.Department,'') AS Department
         FROM Batches b
         INNER JOIN TrainingPrograms tp ON tp.TrainingId = b.TrainingId
         LEFT JOIN BatchStudents bs ON bs.BatchId = b.BatchId
         LEFT JOIN Students s ON s.StudentId = bs.StudentId
-        GROUP BY b.BatchId, b.BatchCode, b.BatchName, tp.TrainingType, b.IsActive
+        WHERE b.IsActive=1 AND (@department IS NULL OR @department='' OR b.Department=@department)
+        GROUP BY b.BatchId, b.BatchCode, b.BatchName, tp.TrainingType, b.IsActive, b.Department
         ORDER BY b.BatchId", reader => new BatchDto(
             reader.GetInt32("BatchId"),
             reader.GetString("BatchCode"),
@@ -251,7 +291,9 @@ public sealed class PortalRepository
             reader.GetString("TrainingType"),
             reader.GetInt32("Strength"),
             reader.GetBoolean("IsActive"),
-            reader.GetString("Students")));
+            reader.GetString("Students"),
+            reader.GetString("Department")), new SqlParameter("@department", (object?)department ?? DBNull.Value));
+    }
 
     public Task<List<AnnouncementDto>> GetAnnouncementsAsync() => QueryAsync(@"
         SELECT AnnouncementId, Subject, Message, PublishedBy, PublishedTo, PublishedAt
@@ -763,9 +805,10 @@ public sealed class PortalRepository
 
     public async Task<int> CreateTrainingProgramAsync(SaveTrainingProgramDto dto)
     {
+        await EnsureTrainingOwnershipSchemaAsync();
         const string sql = @"
-            INSERT INTO TrainingPrograms (TrainingType, Objectives, Outcome, TargetAudience, AcademicYear, Duration, Mode, StartDate, EndDate, Status)
-            VALUES (@type, @obj, @out, @audience, @year, @dur, @mode, @start, @end, @status);
+            INSERT INTO TrainingPrograms (TrainingType, Objectives, Outcome, TargetAudience, AcademicYear, Duration, Mode, StartDate, EndDate, Status, CreatedByAccountId, Department)
+            VALUES (@type, @obj, @out, @audience, @year, @dur, @mode, @start, @end, @status, @createdBy, @department);
             SELECT SCOPE_IDENTITY();";
         
         var id = Convert.ToInt32(await ExecuteScalarAsync(sql,
@@ -778,7 +821,9 @@ public sealed class PortalRepository
             new SqlParameter("@mode", dto.Mode),
             new SqlParameter("@start", dto.StartDate.ToDateTime(TimeOnly.MinValue)),
             new SqlParameter("@end", dto.EndDate.ToDateTime(TimeOnly.MinValue)),
-            new SqlParameter("@status", string.IsNullOrWhiteSpace(dto.Status) ? "Active" : dto.Status)));
+            new SqlParameter("@status", string.IsNullOrWhiteSpace(dto.Status) ? "Active" : dto.Status),
+            new SqlParameter("@createdBy", (object?)dto.CreatedByAccountId ?? DBNull.Value),
+            new SqlParameter("@department", (object?)dto.Department ?? DBNull.Value)));
 
         if (dto.TrainerIds != null && dto.TrainerIds.Count > 0)
         {
@@ -788,15 +833,22 @@ public sealed class PortalRepository
                     new SqlParameter("@tId", id), new SqlParameter("@trId", trainerId));
             }
         }
+        if (dto.BatchIds != null)
+            foreach (var batchId in dto.BatchIds.Distinct())
+                await ExecuteNonQueryAsync(@"INSERT INTO TrainingProgramBatches(TrainingId,BatchId)
+                    SELECT @id,@batchId WHERE EXISTS(SELECT 1 FROM Batches WHERE BatchId=@batchId AND Department=@department)",
+                    new SqlParameter("@id", id), new SqlParameter("@batchId", batchId), new SqlParameter("@department", dto.Department ?? string.Empty));
         return id;
     }
 
     public async Task<bool> UpdateTrainingProgramAsync(int id, SaveTrainingProgramDto dto)
     {
+        await EnsureTrainingOwnershipSchemaAsync();
         const string sql = @"
             UPDATE TrainingPrograms
             SET TrainingType = @type, Objectives = @obj, Outcome = @out, TargetAudience = @audience,
-                AcademicYear = @year, Duration = @dur, Mode = @mode, StartDate = @start, EndDate = @end, Status = @status
+                AcademicYear = @year, Duration = @dur, Mode = @mode, StartDate = @start, EndDate = @end, Status = @status,
+                CreatedByAccountId=COALESCE(CreatedByAccountId,@createdBy), Department=COALESCE(NULLIF(@department,''),Department)
             WHERE TrainingId = @id";
         
         var rows = await ExecuteNonQueryAsync(sql,
@@ -810,7 +862,9 @@ public sealed class PortalRepository
             new SqlParameter("@mode", dto.Mode),
             new SqlParameter("@start", dto.StartDate.ToDateTime(TimeOnly.MinValue)),
             new SqlParameter("@end", dto.EndDate.ToDateTime(TimeOnly.MinValue)),
-            new SqlParameter("@status", string.IsNullOrWhiteSpace(dto.Status) ? "Active" : dto.Status));
+            new SqlParameter("@status", string.IsNullOrWhiteSpace(dto.Status) ? "Active" : dto.Status),
+            new SqlParameter("@createdBy", (object?)dto.CreatedByAccountId ?? DBNull.Value),
+            new SqlParameter("@department", dto.Department ?? string.Empty));
 
         if (dto.TrainerIds != null)
         {
@@ -821,14 +875,72 @@ public sealed class PortalRepository
                     new SqlParameter("@tId", id), new SqlParameter("@trId", trainerId));
             }
         }
+        if (dto.BatchIds != null)
+        {
+            await ExecuteNonQueryAsync("DELETE FROM TrainingProgramBatches WHERE TrainingId=@id", new SqlParameter("@id", id));
+            foreach (var batchId in dto.BatchIds.Distinct())
+                await ExecuteNonQueryAsync(@"INSERT INTO TrainingProgramBatches(TrainingId,BatchId)
+                    SELECT @id,@batchId WHERE EXISTS(SELECT 1 FROM Batches WHERE BatchId=@batchId AND Department=@department)",
+                    new SqlParameter("@id", id), new SqlParameter("@batchId", batchId), new SqlParameter("@department", dto.Department ?? string.Empty));
+        }
         return rows > 0;
     }
 
     public async Task<bool> DeleteTrainingProgramAsync(int id)
     {
+        await EnsureTrainingOwnershipSchemaAsync();
+        await ExecuteNonQueryAsync("DELETE FROM TrainingProgramBatches WHERE TrainingId = @id", new SqlParameter("@id", id));
         await ExecuteNonQueryAsync("DELETE FROM TrainingProgramTrainers WHERE TrainingId = @id", new SqlParameter("@id", id));
         var rows = await ExecuteNonQueryAsync("DELETE FROM TrainingPrograms WHERE TrainingId = @id", new SqlParameter("@id", id));
         return rows > 0;
+    }
+
+    private Task<int> EnsurePortalSessionColumnsAsync() => ExecuteNonQueryAsync(@"
+        IF COL_LENGTH('dbo.TrainingSessions','BatchesJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchesJson NVARCHAR(MAX) NULL;
+        IF COL_LENGTH('dbo.TrainingSessions','AssessmentsJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD AssessmentsJson NVARCHAR(MAX) NULL;
+        IF COL_LENGTH('dbo.TrainingSessions','BatchSchedulesJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchSchedulesJson NVARCHAR(MAX) NULL;
+        IF COL_LENGTH('dbo.TrainingSessions','BatchAccessControlJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchAccessControlJson NVARCHAR(MAX) NULL;");
+
+    public async Task<List<PortalSessionDto>> GetPortalSessionsAsync()
+    {
+        await EnsurePortalSessionColumnsAsync();
+        return await QueryAsync(@"
+            SELECT ts.SessionId,ts.SessionName,tp.TrainingType,ts.Status,
+                   ISNULL(ts.BatchesJson,'[]') BatchesJson,ISNULL(ts.AssessmentsJson,'[]') AssessmentsJson,
+                   ISNULL(ts.BatchSchedulesJson,'{}') BatchSchedulesJson,ISNULL(ts.BatchAccessControlJson,'{}') BatchAccessControlJson
+            FROM TrainingSessions ts INNER JOIN TrainingPrograms tp ON tp.TrainingId=ts.TrainingId ORDER BY ts.SessionId", reader => new PortalSessionDto(
+                reader.GetString("SessionId"), reader.GetString("SessionName"), reader.GetString("TrainingType"), reader.GetString("Status"),
+                System.Text.Json.JsonSerializer.Deserialize<List<string>>(reader.GetString("BatchesJson")) ?? [],
+                System.Text.Json.JsonSerializer.Deserialize<List<string>>(reader.GetString("AssessmentsJson")) ?? [],
+                reader.GetString("BatchSchedulesJson"), reader.GetString("BatchAccessControlJson")));
+    }
+
+    public async Task SavePortalSessionAsync(SavePortalSessionDto dto)
+    {
+        await EnsurePortalSessionColumnsAsync();
+        var trainingId = await ExecuteScalarAsync("SELECT TOP 1 TrainingId FROM TrainingPrograms WHERE TrainingType=@program ORDER BY TrainingId",
+            new SqlParameter("@program", dto.TrainingProgram));
+        if (trainingId is null || trainingId is DBNull) throw new InvalidOperationException("The selected training program does not exist.");
+        var status = dto.Status is "Open" or "Closed" ? dto.Status : "Closed";
+        await ExecuteNonQueryAsync(@"
+            IF EXISTS(SELECT 1 FROM TrainingSessions WHERE SessionId=@id)
+                UPDATE TrainingSessions SET TrainingId=@trainingId,SessionName=@name,Status=@status,BatchesJson=@batches,
+                    AssessmentsJson=@assessments,BatchSchedulesJson=@schedules,BatchAccessControlJson=@access WHERE SessionId=@id;
+            ELSE
+                INSERT INTO TrainingSessions(SessionId,TrainingId,SessionName,SessionDate,StartTime,EndTime,Venue,Status,
+                    BatchesJson,AssessmentsJson,BatchSchedulesJson,BatchAccessControlJson)
+                VALUES(@id,@trainingId,@name,CAST(GETDATE() AS date),'00:00','00:00','',@status,@batches,@assessments,@schedules,@access);",
+            new SqlParameter("@id", dto.SessionId), new SqlParameter("@trainingId", Convert.ToInt32(trainingId)),
+            new SqlParameter("@name", dto.SessionName), new SqlParameter("@status", status),
+            new SqlParameter("@batches", System.Text.Json.JsonSerializer.Serialize(dto.Batches ?? [])),
+            new SqlParameter("@assessments", System.Text.Json.JsonSerializer.Serialize(dto.Assessments ?? [])),
+            new SqlParameter("@schedules", dto.BatchSchedulesJson ?? "{}"), new SqlParameter("@access", dto.BatchAccessControlJson ?? "{}"));
+    }
+
+    public async Task<bool> DeletePortalSessionAsync(string sessionId)
+    {
+        await EnsurePortalSessionColumnsAsync();
+        return await ExecuteNonQueryAsync("DELETE FROM TrainingSessions WHERE SessionId=@id", new SqlParameter("@id", sessionId)) > 0;
     }
 
     public async Task<int> CreateStudentAsync(SaveStudentDto dto)

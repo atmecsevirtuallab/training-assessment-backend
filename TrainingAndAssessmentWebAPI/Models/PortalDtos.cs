@@ -83,7 +83,8 @@ public sealed record TrainerDto(
     string TotalExperience,
     string EmailId,
     string ContactNo,
-    bool IsActive);
+    bool IsActive,
+    string Department);
 
 public sealed record TrainingProgramDto(
     int TrainingId,
@@ -107,7 +108,8 @@ public sealed record BatchDto(
     string TrainingProgram,
     int Strength,
     bool IsActive,
-    string Students);
+    string Students,
+    string Department);
 
 public sealed record AnnouncementDto(
     string AnnouncementId,
@@ -183,7 +185,30 @@ public sealed record SaveTrainingProgramDto(
     DateOnly StartDate,
     DateOnly EndDate,
     string Status,
-    List<int>? TrainerIds = null);
+    List<int>? TrainerIds = null,
+    List<int>? BatchIds = null,
+    string? CreatedByAccountId = null,
+    string? Department = null);
+
+public sealed record PortalSessionDto(
+    string SessionId,
+    string SessionName,
+    string TrainingProgram,
+    string Status,
+    List<string> Batches,
+    List<string> Assessments,
+    string BatchSchedulesJson,
+    string BatchAccessControlJson);
+
+public sealed record SavePortalSessionDto(
+    string SessionId,
+    string SessionName,
+    string TrainingProgram,
+    string Status,
+    List<string>? Batches,
+    List<string>? Assessments,
+    string? BatchSchedulesJson = null,
+    string? BatchAccessControlJson = null);
 
 public sealed record SaveStudentDto(
     string Usn,
@@ -297,4 +322,3 @@ public sealed record FeedbackSubmissionRowDto(
 
 public sealed record SessionAttendanceRecordDto(int StudentId, bool Present, bool Absent, string? Remarks);
 public sealed record SaveSessionAttendanceDto(string SessionId, string Batch, string RecordedAt, List<SessionAttendanceRecordDto> Records);
-
