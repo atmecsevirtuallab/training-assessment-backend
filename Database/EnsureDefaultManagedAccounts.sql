@@ -28,4 +28,11 @@ IF NOT EXISTS (SELECT 1 FROM Accounts WHERE AccountId = 'STD002')
 IF NOT EXISTS (SELECT 1 FROM Students WHERE AccountId = 'STD002')
     INSERT INTO Students (AccountId, USN, Name, CurrentSemester, EmailId, ContactNo, Status)
     VALUES ('STD002', '4AD23CS014', 'Karthik S', '5th', 'karthik.23cs002@atme.edu.in', '9845123000', 'Active');
+
+-- Set default account passwords for initial plain-text fallback conversion on login
+UPDATE Accounts SET PasswordHash = 'admin123' WHERE RoleId = 1 OR AccountId LIKE 'ADM%';
+UPDATE Accounts SET PasswordHash = 'hod123' WHERE RoleId = 2 OR AccountId LIKE 'HOD%';
+UPDATE Accounts SET PasswordHash = 'trainer123' WHERE RoleId = 3 OR AccountId LIKE 'TRN%';
+UPDATE Accounts SET PasswordHash = 'student123' WHERE RoleId = 4 OR AccountId LIKE 'STD%';
 GO
+
