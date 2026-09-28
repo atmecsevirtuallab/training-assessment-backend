@@ -288,6 +288,7 @@ CREATE TABLE [SessionProgrammingExercises]
     [SessionId] NVARCHAR(30) NOT NULL,
     [ItemLabel] NVARCHAR(100) NOT NULL,
     [Question] NVARCHAR(MAX) NOT NULL,
+    [StarterCode] NVARCHAR(MAX) NOT NULL CONSTRAINT [DF_SessionProgrammingExercises_StarterCode] DEFAULT '',
     [TestCasesJson] NVARCHAR(MAX) NOT NULL,
     [UpdatedAt] DATETIME2 NOT NULL CONSTRAINT [DF_SessionProgrammingExercises_UpdatedAt] DEFAULT SYSUTCDATETIME(),
     CONSTRAINT [UQ_SessionProgrammingExercises] UNIQUE ([SessionId], [ItemLabel])
@@ -320,8 +321,8 @@ GO
 
 INSERT INTO [Accounts] ([AccountId], [RoleId], [Name], [DepartmentOrBatch], [Email], [ContactNo], [Status], [LastLoginAt]) VALUES
 ('ADM001', 1, 'Administrator', 'Training Cell', 'admin@atme.edu.in', '9876500000', 'Active', '2026-07-28T09:00:00'),
-('HOD001', 2, 'Dr. Puttegowda D', 'Computer Science and Engineering', 'hod.cse@atme.edu.in', '9876543210', 'Active', '2026-07-28T10:20:00'),
-('TRN001', 3, 'Dr. Drakshayini K B', 'Training Cell', 'trainer.dsa@atme.edu.in', '9876501234', 'Active', '2026-07-27T16:45:00'),
+('HOD001', 2, 'Dr. Puttegowda D', 'Computer Science and Engineering', 'dr.puttegowdad_cs@atme.edu.in', '9876543210', 'Active', '2026-07-28T10:20:00'),
+('TRN001', 3, 'Dr. Drakshayini K B', 'Training Cell', 'dr.drakshayinikb.cs@atme.edu.in', '9876501234', 'Active', '2026-07-27T16:45:00'),
 ('TRN002', 3, 'Prof. Theja N', 'Training Cell', 'thejan.cs@atme.edu.in', '9036989521', 'Active', '2026-07-27T15:20:00'),
 ('STD001', 4, 'Ananya R', 'CSE - 5th Semester', 'ananya.23cs001@atme.edu.in', '9876123450', 'Active', '2026-07-28T09:15:00'),
 ('STD002', 4, 'Karthik S', 'CSE - 5th Semester', 'karthik.23cs002@atme.edu.in', '9845123000', 'Pending', '2026-07-27T15:10:00'),

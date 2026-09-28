@@ -71,7 +71,8 @@ public sealed record StudentDto(
     string CurrentSemester,
     string EmailId,
     string ContactNo,
-    string Status);
+    string Status,
+    string Batches);
 
 public sealed record TrainerDto(
     int TrainerId,
@@ -270,6 +271,7 @@ public sealed record SaveBatchDto(
     string BatchName,
     int TrainingId,
     bool IsActive = true);
+public sealed record MoveStudentToBatchDto(string BatchName);
 
 public sealed record SessionNotesDto(string SessionId, string ContentHtml, DateTime? UpdatedAt);
 
@@ -286,7 +288,7 @@ public sealed record SessionQuizQuestionDto(
     List<int> CorrectOptionIndexes);
 
 public sealed record ProgrammingTestCaseDto(string TestCaseId, string Input, string Output);
-public sealed record ProgrammingExerciseDto(string ItemLabel, string Question, List<ProgrammingTestCaseDto> TestCases);
+public sealed record ProgrammingExerciseDto(string ItemLabel, string Question, string StarterCode, List<ProgrammingTestCaseDto> TestCases);
 public sealed record DescriptiveQuestionDto(
     string QuestionLabel,
     string AnswerLabel,
@@ -309,6 +311,22 @@ public sealed record InteractiveProgramInputDto(string Input);
 public sealed record InteractiveProgramResponseDto(string? SessionId, string Output, string Error, bool IsRunning);
 public sealed record ExecutionResultDto(string TestCaseId, string Input, string ExpectedOutput, string ActualOutput, string Status);
 public sealed record ProgramExecutionResponseDto(string? CompileError, List<ExecutionResultDto> Results);
+public sealed record DescriptiveSubmissionDto(
+    string SessionId, string ItemLabel, int StudentId, string Usn, string Name,
+    string SubmittedAt, string QuestionText, string ReferenceAnswer, string StudentAnswer,
+    double AiScore, double AiMaxScore, string AiFeedback);
+public sealed record SessionSubmissionDto(
+    string Assessment, string ItemLabel, int StudentId, string Usn, string StudentName,
+    string Status, DateTime SubmittedAt, string Score);
+public sealed record SessionPerformanceSnapshotDto(
+    string SessionId, string PerformanceRowsJson, string? AiAnalysisJson, DateTime UpdatedAt);
+public sealed record SaveSessionPerformanceSnapshotDto(string PerformanceRowsJson, string? AiAnalysisJson);
+public sealed record KonnectQuizModeDto(string SessionId, string Mode);
+public sealed record SubmitNormalKonnectQuizDto(int StudentId, string Usn, string StudentName, List<int?> Answers);
+public sealed record NormalKonnectQuizSubmissionDto(long SubmissionId, string SessionId, int StudentId, string Usn,
+    string StudentName, int Score, int MaxScore, DateTime SubmittedAt);
+public sealed record FollowUpQuizSubmissionDto(long SubmissionId, string SessionId, int StudentId, string Usn,
+    string StudentName, int Score, int MaxScore, DateTime SubmittedAt);
 
 public sealed record FeedbackSubmissionRowDto(
     long SlNo,

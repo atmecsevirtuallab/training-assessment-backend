@@ -187,31 +187,51 @@ public sealed class PortalRepository
             reader.GetNullableString("TotalExperience")));
 
     public Task<List<StudentDto>> GetStudentsAsync() => QueryAsync(@"
-        SELECT StudentId, USN, Name, CurrentSemester, EmailId, ContactNo, Status
-        FROM Students ORDER BY StudentId", reader => new StudentDto(
+        SELECT s.StudentId, s.USN, s.Name, s.CurrentSemester, s.EmailId, s.ContactNo, s.Status,
+               ISNULL(STRING_AGG(CAST(b.BatchName AS varchar(max)), ', '), '') AS Batches
+        FROM Students s
+        LEFT JOIN BatchStudents bs ON bs.StudentId=s.StudentId
+        LEFT JOIN Batches b ON b.BatchId=bs.BatchId
+        GROUP BY s.StudentId, s.USN, s.Name, s.CurrentSemester, s.EmailId, s.ContactNo, s.Status
+        ORDER BY s.StudentId", reader => new StudentDto(
             reader.GetInt32("StudentId"),
             reader.GetString("USN"),
             reader.GetString("Name"),
             reader.GetString("CurrentSemester"),
             reader.GetString("EmailId"),
             reader.GetString("ContactNo"),
-            reader.GetString("Status")));
+            reader.GetString("Status"),
+            reader.GetString("Batches")));
 
-    private Task<int> EnsureTrainingOwnershipSchemaAsync() => ExecuteNonQueryAsync(@"
+    private async Task EnsureTrainingOwnershipSchemaAsync()
+    {
+        // Schema changes and statements that reference the new columns must be
+        // executed in separate batches. SQL Server compiles the entire batch
+        // before ALTER TABLE runs and otherwise reports "Invalid column name".
+        await ExecuteNonQueryAsync(@"
         IF COL_LENGTH('dbo.TrainingPrograms','CreatedByAccountId') IS NULL
             ALTER TABLE dbo.TrainingPrograms ADD CreatedByAccountId VARCHAR(30) NULL;
         IF COL_LENGTH('dbo.TrainingPrograms','Department') IS NULL
             ALTER TABLE dbo.TrainingPrograms ADD Department VARCHAR(200) NULL;
         IF COL_LENGTH('dbo.Batches','Department') IS NULL
-            ALTER TABLE dbo.Batches ADD Department VARCHAR(200) NULL;
+            ALTER TABLE dbo.Batches ADD Department VARCHAR(200) NULL;");
+
+        await ExecuteNonQueryAsync(@"
         IF OBJECT_ID('dbo.TrainingProgramBatches','U') IS NULL
         BEGIN
             CREATE TABLE dbo.TrainingProgramBatches(
                 TrainingId INT NOT NULL REFERENCES dbo.TrainingPrograms(TrainingId) ON DELETE CASCADE,
                 BatchId INT NOT NULL REFERENCES dbo.Batches(BatchId),
                 CONSTRAINT PK_TrainingProgramBatches PRIMARY KEY(TrainingId,BatchId));
+        END;");
+
+        await ExecuteNonQueryAsync(@"
+        IF NOT EXISTS (SELECT 1 FROM dbo.TrainingProgramBatches)
+        BEGIN
             INSERT INTO dbo.TrainingProgramBatches(TrainingId,BatchId)
-            SELECT TrainingId,BatchId FROM dbo.Batches;
+            SELECT b.TrainingId,b.BatchId FROM dbo.Batches b
+            WHERE b.TrainingId IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM dbo.TrainingProgramBatches tpb WHERE tpb.TrainingId=b.TrainingId AND tpb.BatchId=b.BatchId);
         END;
         DECLARE @defaultDepartment VARCHAR(200) = (
             SELECT TOP 1 a.DepartmentOrBatch FROM dbo.Accounts a
@@ -220,6 +240,7 @@ public sealed class PortalRepository
         SET @defaultDepartment=ISNULL(NULLIF(@defaultDepartment,''),'Unassigned');
         UPDATE dbo.TrainingPrograms SET Department=@defaultDepartment WHERE Department IS NULL OR Department='';
         UPDATE dbo.Batches SET Department=@defaultDepartment WHERE Department IS NULL OR Department='';");
+    }
 
     public async Task<List<TrainerDto>> GetTrainersAsync(string? department = null)
     {
@@ -698,12 +719,14 @@ public sealed class PortalRepository
     {
         await EnsureProgrammingExercisesTableAsync();
         var rows = await QueryAsync(@"
-            SELECT ItemLabel, Question, TestCasesJson FROM SessionProgrammingExercises
+            SELECT ItemLabel, Question, ISNULL(StarterCode,'') StarterCode, TestCasesJson FROM SessionProgrammingExercises
             WHERE SessionId=@SessionId AND ItemLabel=@ItemLabel", reader => new ProgrammingExerciseDto(
-                reader.GetString("ItemLabel"), reader.GetString("Question"),
-                JsonSerializer.Deserialize<List<ProgrammingTestCaseDto>>(reader.GetString("TestCasesJson")) ?? new()),
+                reader.GetString("ItemLabel"), reader.GetString("Question"), reader.GetString("StarterCode"),
+                JsonSerializer.Deserialize<List<ProgrammingTestCaseDto>>(
+                    reader.GetString("TestCasesJson"),
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new()),
             new SqlParameter("@SessionId", sessionId), new SqlParameter("@ItemLabel", itemLabel));
-        return rows.FirstOrDefault() ?? new ProgrammingExerciseDto(itemLabel, string.Empty, new());
+        return rows.FirstOrDefault() ?? new ProgrammingExerciseDto(itemLabel, string.Empty, string.Empty, new());
     }
 
     public async Task SaveProgrammingExerciseAsync(string sessionId, ProgrammingExerciseDto exercise)
@@ -713,11 +736,12 @@ public sealed class PortalRepository
             MERGE SessionProgrammingExercises AS target
             USING (SELECT @SessionId SessionId, @ItemLabel ItemLabel) source
             ON target.SessionId=source.SessionId AND target.ItemLabel=source.ItemLabel
-            WHEN MATCHED THEN UPDATE SET Question=@Question, TestCasesJson=@TestCasesJson, UpdatedAt=SYSUTCDATETIME()
-            WHEN NOT MATCHED THEN INSERT(SessionId,ItemLabel,Question,TestCasesJson,UpdatedAt)
-            VALUES(@SessionId,@ItemLabel,@Question,@TestCasesJson,SYSUTCDATETIME());",
+            WHEN MATCHED THEN UPDATE SET Question=@Question, StarterCode=@StarterCode, TestCasesJson=@TestCasesJson, UpdatedAt=SYSUTCDATETIME()
+            WHEN NOT MATCHED THEN INSERT(SessionId,ItemLabel,Question,StarterCode,TestCasesJson,UpdatedAt)
+            VALUES(@SessionId,@ItemLabel,@Question,@StarterCode,@TestCasesJson,SYSUTCDATETIME());",
             new SqlParameter("@SessionId", sessionId), new SqlParameter("@ItemLabel", exercise.ItemLabel),
             new SqlParameter("@Question", exercise.Question),
+            new SqlParameter("@StarterCode", exercise.StarterCode ?? string.Empty),
             new SqlParameter("@TestCasesJson", JsonSerializer.Serialize(exercise.TestCases)));
     }
 
@@ -726,9 +750,11 @@ public sealed class PortalRepository
         CREATE TABLE dbo.SessionProgrammingExercises(
             SessionProgrammingExerciseId INT IDENTITY(1,1) PRIMARY KEY,
             SessionId NVARCHAR(30) NOT NULL, ItemLabel NVARCHAR(100) NOT NULL,
-            Question NVARCHAR(MAX) NOT NULL, TestCasesJson NVARCHAR(MAX) NOT NULL,
+            Question NVARCHAR(MAX) NOT NULL, StarterCode NVARCHAR(MAX) NOT NULL DEFAULT '', TestCasesJson NVARCHAR(MAX) NOT NULL,
             UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-            CONSTRAINT UQ_SessionProgrammingExercises UNIQUE(SessionId,ItemLabel));");
+            CONSTRAINT UQ_SessionProgrammingExercises UNIQUE(SessionId,ItemLabel));
+        IF COL_LENGTH('dbo.SessionProgrammingExercises','StarterCode') IS NULL
+            ALTER TABLE dbo.SessionProgrammingExercises ADD StarterCode NVARCHAR(MAX) NOT NULL CONSTRAINT DF_SessionProgrammingExercises_StarterCode DEFAULT '';");
 
     public async Task<DescriptiveAssignmentDto> GetDescriptiveAssignmentAsync(string sessionId, string itemLabel)
     {
@@ -738,7 +764,9 @@ public sealed class PortalRepository
             WHERE SessionId=@SessionId AND ItemLabel=@ItemLabel",
             reader => new DescriptiveAssignmentDto(
                 reader.GetString("ItemLabel"),
-                JsonSerializer.Deserialize<List<DescriptiveQuestionDto>>(reader.GetString("QuestionsJson")) ?? new()),
+                JsonSerializer.Deserialize<List<DescriptiveQuestionDto>>(
+                    reader.GetString("QuestionsJson"),
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new()),
             new SqlParameter("@SessionId", sessionId), new SqlParameter("@ItemLabel", itemLabel));
         return rows.FirstOrDefault() ?? new DescriptiveAssignmentDto(itemLabel, new());
     }
@@ -802,6 +830,271 @@ public sealed class PortalRepository
             ALTER TABLE dbo.ProgrammingExecutionSubmissions ADD Usn NVARCHAR(30) NULL;
         IF COL_LENGTH('dbo.ProgrammingExecutionSubmissions','StudentName') IS NULL
             ALTER TABLE dbo.ProgrammingExecutionSubmissions ADD StudentName NVARCHAR(150) NULL;");
+
+    private Task<int> EnsureDescriptiveSubmissionsTableAsync() => ExecuteNonQueryAsync(@"
+        IF OBJECT_ID(N'dbo.DescriptiveAssignmentSubmissions', N'U') IS NULL
+        CREATE TABLE dbo.DescriptiveAssignmentSubmissions(
+            SubmissionId BIGINT IDENTITY(1,1) PRIMARY KEY, SessionId NVARCHAR(30) NOT NULL,
+            ItemLabel NVARCHAR(100) NOT NULL, StudentId INT NOT NULL, Usn NVARCHAR(30) NOT NULL,
+            StudentName NVARCHAR(150) NOT NULL, SubmittedAt DATETIME2 NOT NULL,
+            QuestionText NVARCHAR(MAX) NOT NULL, ReferenceAnswer NVARCHAR(MAX) NOT NULL,
+            StudentAnswer NVARCHAR(MAX) NOT NULL, AiScore FLOAT NOT NULL, AiMaxScore FLOAT NOT NULL,
+            AiFeedback NVARCHAR(MAX) NOT NULL,
+            CONSTRAINT UQ_DescriptiveSubmission UNIQUE(SessionId,ItemLabel,StudentId));");
+
+    public async Task<List<DescriptiveSubmissionDto>> GetDescriptiveSubmissionsAsync(string sessionId, string itemLabel)
+    {
+        await EnsureDescriptiveSubmissionsTableAsync();
+        return await QueryAsync(@"SELECT SessionId,ItemLabel,StudentId,Usn,StudentName,SubmittedAt,QuestionText,
+            ReferenceAnswer,StudentAnswer,AiScore,AiMaxScore,AiFeedback
+            FROM DescriptiveAssignmentSubmissions WHERE SessionId=@sessionId AND ItemLabel=@itemLabel
+            ORDER BY SubmittedAt DESC", r => new DescriptiveSubmissionDto(
+                r.GetString("SessionId"), r.GetString("ItemLabel"), r.GetInt32("StudentId"), r.GetString("Usn"),
+                r.GetString("StudentName"), r.GetDateTime("SubmittedAt").ToString("o"), r.GetString("QuestionText"),
+                r.GetString("ReferenceAnswer"), r.GetString("StudentAnswer"), Convert.ToDouble(r["AiScore"]),
+                Convert.ToDouble(r["AiMaxScore"]), r.GetString("AiFeedback")),
+            new SqlParameter("@sessionId", sessionId), new SqlParameter("@itemLabel", itemLabel));
+    }
+
+    public async Task<DescriptiveSubmissionDto> SaveDescriptiveSubmissionAsync(DescriptiveSubmissionDto dto)
+    {
+        await EnsureDescriptiveSubmissionsTableAsync();
+        var submittedAt = DateTime.TryParse(dto.SubmittedAt, out var parsed) ? parsed : DateTime.UtcNow;
+        await ExecuteNonQueryAsync(@"MERGE DescriptiveAssignmentSubmissions AS target
+            USING (SELECT @sessionId SessionId,@itemLabel ItemLabel,@studentId StudentId) source
+            ON target.SessionId=source.SessionId AND target.ItemLabel=source.ItemLabel AND target.StudentId=source.StudentId
+            WHEN MATCHED THEN UPDATE SET Usn=@usn,StudentName=@name,SubmittedAt=@submittedAt,QuestionText=@question,
+                ReferenceAnswer=@reference,StudentAnswer=@answer,AiScore=@score,AiMaxScore=@maxScore,AiFeedback=@feedback
+            WHEN NOT MATCHED THEN INSERT(SessionId,ItemLabel,StudentId,Usn,StudentName,SubmittedAt,QuestionText,
+                ReferenceAnswer,StudentAnswer,AiScore,AiMaxScore,AiFeedback)
+                VALUES(@sessionId,@itemLabel,@studentId,@usn,@name,@submittedAt,@question,@reference,@answer,@score,@maxScore,@feedback);",
+            new SqlParameter("@sessionId", dto.SessionId), new SqlParameter("@itemLabel", dto.ItemLabel),
+            new SqlParameter("@studentId", dto.StudentId), new SqlParameter("@usn", dto.Usn), new SqlParameter("@name", dto.Name),
+            new SqlParameter("@submittedAt", submittedAt), new SqlParameter("@question", dto.QuestionText),
+            new SqlParameter("@reference", dto.ReferenceAnswer), new SqlParameter("@answer", dto.StudentAnswer),
+            new SqlParameter("@score", dto.AiScore), new SqlParameter("@maxScore", dto.AiMaxScore),
+            new SqlParameter("@feedback", dto.AiFeedback));
+        return dto with { SubmittedAt = submittedAt.ToString("o") };
+    }
+
+    public async Task<List<SessionSubmissionDto>> GetSessionSubmissionsAsync(string sessionId, string? batch = null)
+    {
+        await EnsureProgrammingSubmissionsTableAsync();
+        await EnsureDescriptiveSubmissionsTableAsync();
+        await EnsureLiveQuizSubmissionTablesAsync();
+        await EnsureKonnectQuizModeTablesAsync();
+        await EnsureFollowUpQuizSubmissionsTableAsync();
+        var programming = await QueryAsync(@"WITH latest AS (
+            SELECT *,ROW_NUMBER() OVER(PARTITION BY ItemLabel,StudentId ORDER BY SubmittedAt DESC,SubmissionId DESC) rn
+            FROM ProgrammingExecutionSubmissions WHERE SessionId=@sessionId AND StudentId IS NOT NULL)
+            SELECT ItemLabel,StudentId,ISNULL(Usn,'') Usn,ISNULL(StudentName,'') StudentName,SubmittedAt,ResultsJson,CompileError
+            FROM latest WHERE rn=1", r => {
+                var results = JsonSerializer.Deserialize<List<ExecutionResultDto>>(r.GetString("ResultsJson"),
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+                var passed = results.Count(x => string.Equals(x.Status, "Passed", StringComparison.OrdinalIgnoreCase));
+                var label = r.GetString("ItemLabel");
+                return new SessionSubmissionDto(label.Contains("Assignment", StringComparison.OrdinalIgnoreCase) ? "Programming Assignments" : "Programming Exercises",
+                    label, r.GetInt32("StudentId"), r.GetString("Usn"), r.GetString("StudentName"), "Submitted",
+                    r.GetDateTime("SubmittedAt"), results.Count == 0 ? "-" : $"{passed}/{results.Count}");
+            }, new SqlParameter("@sessionId", sessionId));
+        var descriptive = await QueryAsync(@"SELECT ItemLabel,StudentId,Usn,StudentName,SubmittedAt,AiScore,AiMaxScore
+            FROM DescriptiveAssignmentSubmissions WHERE SessionId=@sessionId", r => new SessionSubmissionDto(
+                "Descriptive Assignments", r.GetString("ItemLabel"), r.GetInt32("StudentId"), r.GetString("Usn"),
+                r.GetString("StudentName"), "Submitted", r.GetDateTime("SubmittedAt"),
+                $"{Convert.ToDouble(r["AiScore"]):0.##}/{Convert.ToDouble(r["AiMaxScore"]):0.##}"),
+            new SqlParameter("@sessionId", sessionId));
+        var quizzes = await QueryAsync(@"WITH latest AS (
+            SELECT p.StudentId,p.Usn,p.StudentName,p.CumulativeScore,p.JoinedAt,r.RunId,r.QuestionsJson,r.CreatedAt,
+                ROW_NUMBER() OVER(PARTITION BY p.StudentId ORDER BY r.CreatedAt DESC) rn
+            FROM LiveQuizRuns r INNER JOIN LiveQuizParticipants p ON p.RunId=r.RunId WHERE r.SessionId=@sessionId)
+            SELECT StudentId,Usn,StudentName,CumulativeScore,JoinedAt,QuestionsJson FROM latest WHERE rn=1", r => {
+                var questions = JsonSerializer.Deserialize<List<SessionQuizQuestionDto>>(r.GetString("QuestionsJson"),
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+                var total = questions.Sum(q => q.Marks);
+                return new SessionSubmissionDto("Konnect Quiz", "Konnect Quiz", r.GetInt32("StudentId"), r.GetString("Usn"),
+                    r.GetString("StudentName"), "Submitted", r.GetDateTime("JoinedAt"), $"{r.GetInt32("CumulativeScore")}/{total}");
+            }, new SqlParameter("@sessionId", sessionId));
+        var normalQuizzes = await QueryAsync(@"SELECT StudentId,Usn,StudentName,Score,MaxScore,SubmittedAt
+            FROM NormalKonnectQuizSubmissions WHERE SessionId=@sessionId", r => new SessionSubmissionDto(
+                "Konnect Quiz","Konnect Quiz",r.GetInt32("StudentId"),r.GetString("Usn"),r.GetString("StudentName"),
+                "Submitted",r.GetDateTime("SubmittedAt"),$"{r.GetInt32("Score")}/{r.GetInt32("MaxScore")}"),
+            new SqlParameter("@sessionId",sessionId));
+        var followUpQuizzes = await QueryAsync(@"SELECT StudentId,Usn,StudentName,Score,MaxScore,SubmittedAt
+            FROM FollowUpQuizSubmissions WHERE SessionId=@sessionId", r => new SessionSubmissionDto(
+                "Follow-Up Quiz","Follow-Up Quiz",r.GetInt32("StudentId"),r.GetString("Usn"),r.GetString("StudentName"),
+                "Submitted",r.GetDateTime("SubmittedAt"),$"{r.GetInt32("Score")}/{r.GetInt32("MaxScore")}"),
+            new SqlParameter("@sessionId",sessionId));
+        programming.AddRange(descriptive);
+        programming.AddRange(quizzes);
+        programming.AddRange(normalQuizzes);
+        programming.AddRange(followUpQuizzes);
+        if (!string.IsNullOrWhiteSpace(batch))
+        {
+            var allowedStudentIds = (await QueryAsync(@"SELECT bs.StudentId FROM BatchStudents bs
+                INNER JOIN Batches b ON b.BatchId=bs.BatchId
+                WHERE b.BatchName=@batch OR b.BatchCode=@batch", r => r.GetInt32("StudentId"),
+                new SqlParameter("@batch", batch))).ToHashSet();
+            programming = programming.Where(x => allowedStudentIds.Contains(x.StudentId)).ToList();
+        }
+        return programming.OrderByDescending(x => x.SubmittedAt).ToList();
+    }
+
+    public async Task<bool> MoveStudentToBatchAsync(int studentId, string batchName)
+    {
+        var batchIds = await QueryAsync("SELECT TOP 1 BatchId FROM Batches WHERE BatchName=@batch OR BatchCode=@batch",
+            r => r.GetInt32("BatchId"), new SqlParameter("@batch", batchName.Trim()));
+        if (batchIds.Count == 0) return false;
+        await using var connection = new SqlConnection(_connectionString);
+        await OpenConnectionWithRetryAsync(connection);
+        await using var transaction = await connection.BeginTransactionAsync();
+        try
+        {
+            await using var command = new SqlCommand(@"DELETE FROM BatchStudents WHERE StudentId=@studentId;
+                INSERT INTO BatchStudents(BatchId,StudentId) VALUES(@batchId,@studentId);", connection, (SqlTransaction)transaction);
+            command.Parameters.AddWithValue("@studentId", studentId);
+            command.Parameters.AddWithValue("@batchId", batchIds[0]);
+            await command.ExecuteNonQueryAsync();
+            await transaction.CommitAsync();
+            return true;
+        }
+        catch { await transaction.RollbackAsync(); throw; }
+    }
+
+    private Task<int> EnsureLiveQuizSubmissionTablesAsync() => ExecuteNonQueryAsync(@"
+        IF OBJECT_ID('dbo.LiveQuizRuns','U') IS NULL CREATE TABLE dbo.LiveQuizRuns(RunId NVARCHAR(32) PRIMARY KEY,QuizCode NVARCHAR(6) NOT NULL UNIQUE,SessionId NVARCHAR(30) NOT NULL,Batch NVARCHAR(100) NOT NULL,TrainerName NVARCHAR(150) NOT NULL,QuestionsJson NVARCHAR(MAX) NOT NULL,Stage NVARCHAR(20) NOT NULL,Status NVARCHAR(20) NOT NULL,CurrentQuestionIndex INT NOT NULL,SecondsRemaining INT NOT NULL,CreatedAt DATETIME2 NOT NULL,UpdatedAt DATETIME2 NULL);
+        IF OBJECT_ID('dbo.LiveQuizParticipants','U') IS NULL CREATE TABLE dbo.LiveQuizParticipants(RunId NVARCHAR(32) NOT NULL,StudentId INT NOT NULL,Usn NVARCHAR(30) NOT NULL,StudentName NVARCHAR(150) NOT NULL,JoinedAt DATETIME2 NOT NULL,CumulativeScore INT NOT NULL,TotalResponseMilliseconds BIGINT NOT NULL DEFAULT 0,CONSTRAINT PK_LiveQuizParticipants PRIMARY KEY(RunId,StudentId));");
+
+    private Task<int> EnsurePerformanceSnapshotTableAsync() => ExecuteNonQueryAsync(@"
+        IF OBJECT_ID(N'dbo.SessionPerformanceAnalysis', N'U') IS NULL
+        CREATE TABLE dbo.SessionPerformanceAnalysis(
+            SessionId NVARCHAR(30) NOT NULL PRIMARY KEY, PerformanceRowsJson NVARCHAR(MAX) NOT NULL,
+            AiAnalysisJson NVARCHAR(MAX) NULL, UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME());");
+
+    private Task<int> EnsureKonnectQuizModeTablesAsync() => ExecuteNonQueryAsync(@"
+        IF OBJECT_ID(N'dbo.SessionKonnectQuizSettings',N'U') IS NULL
+        CREATE TABLE dbo.SessionKonnectQuizSettings(SessionId NVARCHAR(30) NOT NULL PRIMARY KEY,
+            Mode NVARCHAR(10) NOT NULL,UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME());
+        IF OBJECT_ID(N'dbo.NormalKonnectQuizSubmissions',N'U') IS NULL
+        CREATE TABLE dbo.NormalKonnectQuizSubmissions(SubmissionId BIGINT IDENTITY(1,1) PRIMARY KEY,
+            SessionId NVARCHAR(30) NOT NULL,StudentId INT NOT NULL,Usn NVARCHAR(30) NOT NULL,
+            StudentName NVARCHAR(150) NOT NULL,AnswersJson NVARCHAR(MAX) NOT NULL,Score INT NOT NULL,
+            MaxScore INT NOT NULL,SubmittedAt DATETIME2 NOT NULL,
+            CONSTRAINT UQ_NormalKonnectQuizSubmission UNIQUE(SessionId,StudentId));");
+
+    private Task<int> EnsureFollowUpQuizSubmissionsTableAsync() => ExecuteNonQueryAsync(@"
+        IF OBJECT_ID(N'dbo.FollowUpQuizSubmissions',N'U') IS NULL
+        CREATE TABLE dbo.FollowUpQuizSubmissions(SubmissionId BIGINT IDENTITY(1,1) PRIMARY KEY,
+            SessionId NVARCHAR(30) NOT NULL,StudentId INT NOT NULL,Usn NVARCHAR(30) NOT NULL,
+            StudentName NVARCHAR(150) NOT NULL,AnswersJson NVARCHAR(MAX) NOT NULL,Score INT NOT NULL,
+            MaxScore INT NOT NULL,SubmittedAt DATETIME2 NOT NULL,
+            CONSTRAINT UQ_FollowUpQuizSubmission UNIQUE(SessionId,StudentId));");
+
+    public async Task<KonnectQuizModeDto> GetKonnectQuizModeAsync(string sessionId)
+    {
+        await EnsureKonnectQuizModeTablesAsync();
+        var rows = await QueryAsync("SELECT SessionId,Mode FROM SessionKonnectQuizSettings WHERE SessionId=@id",
+            r => new KonnectQuizModeDto(r.GetString("SessionId"),r.GetString("Mode")),new SqlParameter("@id",sessionId));
+        return rows.FirstOrDefault() ?? new KonnectQuizModeDto(sessionId,"Live");
+    }
+
+    public async Task SaveKonnectQuizModeAsync(string sessionId, string mode)
+    {
+        await EnsureKonnectQuizModeTablesAsync();
+        await ExecuteNonQueryAsync(@"MERGE SessionKonnectQuizSettings target USING(SELECT @id SessionId) source
+            ON target.SessionId=source.SessionId WHEN MATCHED THEN UPDATE SET Mode=@mode,UpdatedAt=SYSUTCDATETIME()
+            WHEN NOT MATCHED THEN INSERT(SessionId,Mode,UpdatedAt) VALUES(@id,@mode,SYSUTCDATETIME());",
+            new SqlParameter("@id",sessionId),new SqlParameter("@mode",mode));
+    }
+
+    public async Task<NormalKonnectQuizSubmissionDto> SaveNormalKonnectQuizSubmissionAsync(string sessionId, SubmitNormalKonnectQuizDto dto)
+    {
+        await EnsureKonnectQuizModeTablesAsync();
+        var questions = await GetSessionQuizAsync(sessionId,"Konnect Quiz");
+        var score = 0;
+        var maxScore = questions.Sum(q => q.Marks);
+        for (var i=0;i<questions.Count;i++)
+        {
+            var selected = i < dto.Answers.Count ? dto.Answers[i] : null;
+            var correct = questions[i].CorrectOptionIndexes?.FirstOrDefault() ?? questions[i].CorrectOptionIndex;
+            if (selected.HasValue && correct.HasValue && selected.Value == correct.Value) score += questions[i].Marks;
+        }
+        var submittedAt = DateTime.UtcNow;
+        await ExecuteNonQueryAsync(@"MERGE NormalKonnectQuizSubmissions target
+            USING(SELECT @sessionId SessionId,@studentId StudentId) source
+            ON target.SessionId=source.SessionId AND target.StudentId=source.StudentId
+            WHEN MATCHED THEN UPDATE SET Usn=@usn,StudentName=@name,AnswersJson=@answers,Score=@score,MaxScore=@max,SubmittedAt=@at
+            WHEN NOT MATCHED THEN INSERT(SessionId,StudentId,Usn,StudentName,AnswersJson,Score,MaxScore,SubmittedAt)
+            VALUES(@sessionId,@studentId,@usn,@name,@answers,@score,@max,@at);",
+            new SqlParameter("@sessionId",sessionId),new SqlParameter("@studentId",dto.StudentId),new SqlParameter("@usn",dto.Usn),
+            new SqlParameter("@name",dto.StudentName),new SqlParameter("@answers",JsonSerializer.Serialize(dto.Answers)),
+            new SqlParameter("@score",score),new SqlParameter("@max",maxScore),new SqlParameter("@at",submittedAt));
+        return (await GetNormalKonnectQuizSubmissionAsync(sessionId,dto.StudentId))!;
+    }
+
+    public async Task<NormalKonnectQuizSubmissionDto?> GetNormalKonnectQuizSubmissionAsync(string sessionId, int studentId)
+    {
+        await EnsureKonnectQuizModeTablesAsync();
+        var rows = await QueryAsync(@"SELECT SubmissionId,SessionId,StudentId,Usn,StudentName,Score,MaxScore,SubmittedAt
+            FROM NormalKonnectQuizSubmissions WHERE SessionId=@sessionId AND StudentId=@studentId",
+            r => new NormalKonnectQuizSubmissionDto(Convert.ToInt64(r["SubmissionId"]),r.GetString("SessionId"),r.GetInt32("StudentId"),
+                r.GetString("Usn"),r.GetString("StudentName"),r.GetInt32("Score"),r.GetInt32("MaxScore"),r.GetDateTime("SubmittedAt")),
+            new SqlParameter("@sessionId",sessionId),new SqlParameter("@studentId",studentId));
+        return rows.FirstOrDefault();
+    }
+
+    public async Task<FollowUpQuizSubmissionDto> SaveFollowUpQuizSubmissionAsync(string sessionId, SubmitNormalKonnectQuizDto dto)
+    {
+        await EnsureFollowUpQuizSubmissionsTableAsync();
+        var questions = await GetSessionQuizAsync(sessionId,"Follow-Up Quiz");
+        var score = 0;
+        var maxScore = questions.Sum(q => q.Marks);
+        for (var i=0;i<questions.Count;i++)
+        {
+            var selected = i < dto.Answers.Count ? dto.Answers[i] : null;
+            var correct = questions[i].CorrectOptionIndexes.Count > 0 ? questions[i].CorrectOptionIndexes[0] : questions[i].CorrectOptionIndex;
+            if (selected.HasValue && correct.HasValue && selected.Value == correct.Value) score += questions[i].Marks;
+        }
+        var submittedAt = DateTime.UtcNow;
+        await ExecuteNonQueryAsync(@"MERGE FollowUpQuizSubmissions target
+            USING(SELECT @sessionId SessionId,@studentId StudentId) source
+            ON target.SessionId=source.SessionId AND target.StudentId=source.StudentId
+            WHEN MATCHED THEN UPDATE SET Usn=@usn,StudentName=@name,AnswersJson=@answers,Score=@score,MaxScore=@max,SubmittedAt=@at
+            WHEN NOT MATCHED THEN INSERT(SessionId,StudentId,Usn,StudentName,AnswersJson,Score,MaxScore,SubmittedAt)
+            VALUES(@sessionId,@studentId,@usn,@name,@answers,@score,@max,@at);",
+            new SqlParameter("@sessionId",sessionId),new SqlParameter("@studentId",dto.StudentId),new SqlParameter("@usn",dto.Usn),
+            new SqlParameter("@name",dto.StudentName),new SqlParameter("@answers",JsonSerializer.Serialize(dto.Answers)),
+            new SqlParameter("@score",score),new SqlParameter("@max",maxScore),new SqlParameter("@at",submittedAt));
+        return (await GetFollowUpQuizSubmissionAsync(sessionId,dto.StudentId))!;
+    }
+
+    public async Task<FollowUpQuizSubmissionDto?> GetFollowUpQuizSubmissionAsync(string sessionId, int studentId)
+    {
+        await EnsureFollowUpQuizSubmissionsTableAsync();
+        var rows = await QueryAsync(@"SELECT SubmissionId,SessionId,StudentId,Usn,StudentName,Score,MaxScore,SubmittedAt
+            FROM FollowUpQuizSubmissions WHERE SessionId=@sessionId AND StudentId=@studentId",
+            r => new FollowUpQuizSubmissionDto(Convert.ToInt64(r["SubmissionId"]),r.GetString("SessionId"),r.GetInt32("StudentId"),
+                r.GetString("Usn"),r.GetString("StudentName"),r.GetInt32("Score"),r.GetInt32("MaxScore"),r.GetDateTime("SubmittedAt")),
+            new SqlParameter("@sessionId",sessionId),new SqlParameter("@studentId",studentId));
+        return rows.FirstOrDefault();
+    }
+
+    public async Task<SessionPerformanceSnapshotDto?> GetSessionPerformanceSnapshotAsync(string sessionId)
+    {
+        await EnsurePerformanceSnapshotTableAsync();
+        var rows = await QueryAsync("SELECT SessionId,PerformanceRowsJson,AiAnalysisJson,UpdatedAt FROM SessionPerformanceAnalysis WHERE SessionId=@id",
+            r => new SessionPerformanceSnapshotDto(r.GetString("SessionId"),r.GetString("PerformanceRowsJson"),r.GetNullableString("AiAnalysisJson"),r.GetDateTime("UpdatedAt")),
+            new SqlParameter("@id", sessionId));
+        return rows.FirstOrDefault();
+    }
+
+    public async Task SaveSessionPerformanceSnapshotAsync(string sessionId, SaveSessionPerformanceSnapshotDto dto)
+    {
+        await EnsurePerformanceSnapshotTableAsync();
+        await ExecuteNonQueryAsync(@"MERGE SessionPerformanceAnalysis AS target USING(SELECT @id SessionId) source
+            ON target.SessionId=source.SessionId WHEN MATCHED THEN UPDATE SET PerformanceRowsJson=@rows,AiAnalysisJson=@ai,UpdatedAt=SYSUTCDATETIME()
+            WHEN NOT MATCHED THEN INSERT(SessionId,PerformanceRowsJson,AiAnalysisJson,UpdatedAt) VALUES(@id,@rows,@ai,SYSUTCDATETIME());",
+            new SqlParameter("@id",sessionId),new SqlParameter("@rows",dto.PerformanceRowsJson),new SqlParameter("@ai",(object?)dto.AiAnalysisJson ?? DBNull.Value));
+    }
 
     public async Task<int> CreateTrainingProgramAsync(SaveTrainingProgramDto dto)
     {
@@ -1141,18 +1434,44 @@ public sealed class PortalRepository
         var email = dto.Email.Trim().ToLowerInvariant();
         var hash = PasswordSecurity.Hash(dto.NewPassword.Trim());
 
-        await ExecuteNonQueryAsync(
-            "UPDATE Accounts SET Email = @email, PasswordHash = @hash, UpdatedAt = SYSUTCDATETIME() WHERE AccountId = @id",
-            new SqlParameter("@email", email),
-            new SqlParameter("@hash", hash),
-            new SqlParameter("@id", dto.AccountId));
+        await using var connection = new SqlConnection(_connectionString);
+        await OpenConnectionWithRetryAsync(connection);
+        await using var transaction = await connection.BeginTransactionAsync();
+        try
+        {
+            await using var duplicate = new SqlCommand(
+                "SELECT COUNT(1) FROM Accounts WHERE LOWER(Email)=LOWER(@email) AND AccountId<>@id", connection, (SqlTransaction)transaction);
+            duplicate.Parameters.AddWithValue("@email", email);
+            duplicate.Parameters.AddWithValue("@id", dto.AccountId);
+            if (Convert.ToInt32(await duplicate.ExecuteScalarAsync()) > 0)
+            {
+                await transaction.RollbackAsync();
+                return false;
+            }
+            await using var account = new SqlCommand(@"UPDATE Accounts SET Email=@email,PasswordHash=@hash,UpdatedAt=SYSUTCDATETIME()
+                WHERE AccountId=@id AND RoleId=(SELECT RoleId FROM Roles WHERE RoleName='Student')", connection, (SqlTransaction)transaction);
+            account.Parameters.AddWithValue("@email", email);
+            account.Parameters.AddWithValue("@hash", hash);
+            account.Parameters.AddWithValue("@id", dto.AccountId);
+            var accountRows = await account.ExecuteNonQueryAsync();
 
-        await ExecuteNonQueryAsync(
-            "UPDATE Students SET EmailId = @email WHERE AccountId = @id",
-            new SqlParameter("@email", email),
-            new SqlParameter("@id", dto.AccountId));
-
-        return true;
+            await using var student = new SqlCommand("UPDATE Students SET EmailId=@email WHERE AccountId=@id", connection, (SqlTransaction)transaction);
+            student.Parameters.AddWithValue("@email", email);
+            student.Parameters.AddWithValue("@id", dto.AccountId);
+            var studentRows = await student.ExecuteNonQueryAsync();
+            if (accountRows != 1 || studentRows != 1)
+            {
+                await transaction.RollbackAsync();
+                return false;
+            }
+            await transaction.CommitAsync();
+            return true;
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
+        }
     }
 
     public async Task<bool> ResetPasswordByAdminAsync(string accountId, string newPassword) =>
@@ -1615,7 +1934,7 @@ public sealed class PortalRepository
         var rows = await QueryAsync(@"
             SELECT SessionId, Batch, StudentId, Present, Absent, Remarks, RecordedAt
             FROM SessionAttendance
-            WHERE SessionId = @sessionId AND (Batch = @batch OR Batch LIKE @batch + '%')",
+            WHERE SessionId = @sessionId AND Batch = @batch",
             r => new {
                 SessionId = r.GetString("SessionId"),
                 Batch = r.GetString("Batch"),
@@ -1638,25 +1957,40 @@ public sealed class PortalRepository
     public async Task SaveSessionAttendanceAsync(SaveSessionAttendanceDto dto)
     {
         await EnsureSessionAttendanceTableAsync();
-        await ExecuteNonQueryAsync(@"
-            DELETE FROM SessionAttendance WHERE SessionId = @sessionId AND Batch = @batch",
-            new SqlParameter("@sessionId", dto.SessionId),
-            new SqlParameter("@batch", dto.Batch));
-
         var recAt = DateTime.TryParse(dto.RecordedAt, out var dt) ? dt : DateTime.UtcNow;
-
-        foreach (var rec in dto.Records)
+        await using var connection = new SqlConnection(_connectionString);
+        await OpenConnectionWithRetryAsync(connection);
+        await using var transaction = await connection.BeginTransactionAsync();
+        try
         {
-            await ExecuteNonQueryAsync(@"
-                INSERT INTO SessionAttendance (SessionId, Batch, StudentId, Present, Absent, Remarks, RecordedAt)
-                VALUES (@sessionId, @batch, @studentId, @present, @absent, @remarks, @recordedAt)",
-                new SqlParameter("@sessionId", dto.SessionId),
-                new SqlParameter("@batch", dto.Batch),
-                new SqlParameter("@studentId", rec.StudentId),
-                new SqlParameter("@present", rec.Present),
-                new SqlParameter("@absent", rec.Absent),
-                new SqlParameter("@remarks", (object?)rec.Remarks ?? DBNull.Value),
-                new SqlParameter("@recordedAt", recAt));
+            await using (var delete = new SqlCommand(
+                "DELETE FROM SessionAttendance WHERE SessionId=@sessionId AND Batch=@batch", connection, (SqlTransaction)transaction))
+            {
+                delete.Parameters.AddWithValue("@sessionId", dto.SessionId);
+                delete.Parameters.AddWithValue("@batch", dto.Batch);
+                await delete.ExecuteNonQueryAsync();
+            }
+            foreach (var rec in dto.Records)
+            {
+                await using var insert = new SqlCommand(@"INSERT INTO SessionAttendance
+                    (SessionId,Batch,StudentId,Present,Absent,Remarks,RecordedAt)
+                    VALUES(@sessionId,@batch,@studentId,@present,@absent,@remarks,@recordedAt)",
+                    connection, (SqlTransaction)transaction);
+                insert.Parameters.AddWithValue("@sessionId", dto.SessionId);
+                insert.Parameters.AddWithValue("@batch", dto.Batch);
+                insert.Parameters.AddWithValue("@studentId", rec.StudentId);
+                insert.Parameters.AddWithValue("@present", rec.Present);
+                insert.Parameters.AddWithValue("@absent", rec.Absent);
+                insert.Parameters.AddWithValue("@remarks", (object?)rec.Remarks ?? DBNull.Value);
+                insert.Parameters.AddWithValue("@recordedAt", recAt);
+                await insert.ExecuteNonQueryAsync();
+            }
+            await transaction.CommitAsync();
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
         }
     }
 

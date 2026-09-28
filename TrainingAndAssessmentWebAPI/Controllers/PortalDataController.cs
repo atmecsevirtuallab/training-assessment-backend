@@ -337,6 +337,14 @@ public sealed class PortalDataController : ControllerBase
         return Ok(new { message = "Batch deleted successfully." });
     }
 
+    [HttpPut("students/{id:int}/batch")]
+    public async Task<IActionResult> MoveStudentToBatch(int id, [FromBody] MoveStudentToBatchDto dto)
+    {
+        var moved = await _repository.MoveStudentToBatchAsync(id, dto.BatchName);
+        if (!moved) return NotFound(new { message = "Student or batch not found." });
+        return Ok(new { message = "Student batch updated successfully." });
+    }
+
     [HttpGet("announcements")]
     public async Task<IActionResult> GetAnnouncements() => Ok(await _repository.GetAnnouncementsAsync());
 
@@ -459,6 +467,69 @@ public sealed class PortalDataController : ControllerBase
     {
         await _repository.SaveSessionAttendanceAsync(dto with { SessionId = sessionId, Batch = batch });
         return Ok(new { message = "Attendance saved successfully" });
+    }
+
+    [HttpGet("sessions/{sessionId}/descriptive-submissions/{itemLabel}")]
+    public async Task<IActionResult> GetDescriptiveSubmissions(string sessionId, string itemLabel) =>
+        Ok(await _repository.GetDescriptiveSubmissionsAsync(sessionId, itemLabel));
+
+    [HttpPost("sessions/{sessionId}/descriptive-submissions")]
+    public async Task<IActionResult> SaveDescriptiveSubmission(string sessionId, [FromBody] DescriptiveSubmissionDto dto)
+    {
+        var saved = await _repository.SaveDescriptiveSubmissionAsync(dto with { SessionId = sessionId });
+        return Ok(new { message = "Descriptive submission saved successfully", submission = saved });
+    }
+
+    [HttpGet("sessions/{sessionId}/submissions")]
+    public async Task<IActionResult> GetSessionSubmissions(string sessionId, [FromQuery] string? batch = null) =>
+        Ok(await _repository.GetSessionSubmissionsAsync(sessionId, batch));
+
+    [HttpGet("sessions/{sessionId}/performance-analysis")]
+    public async Task<IActionResult> GetSessionPerformance(string sessionId)
+    {
+        var snapshot = await _repository.GetSessionPerformanceSnapshotAsync(sessionId);
+        return snapshot is null ? NotFound() : Ok(snapshot);
+    }
+
+    [HttpPut("sessions/{sessionId}/performance-analysis")]
+    public async Task<IActionResult> SaveSessionPerformance(string sessionId, [FromBody] SaveSessionPerformanceSnapshotDto dto)
+    {
+        await _repository.SaveSessionPerformanceSnapshotAsync(sessionId, dto);
+        return Ok(new { message = "Performance analysis saved successfully" });
+    }
+
+    [HttpGet("sessions/{sessionId}/konnect-mode")]
+    public async Task<IActionResult> GetKonnectMode(string sessionId) =>
+        Ok(await _repository.GetKonnectQuizModeAsync(sessionId));
+
+    [HttpPut("sessions/{sessionId}/konnect-mode")]
+    public async Task<IActionResult> SaveKonnectMode(string sessionId, [FromBody] KonnectQuizModeDto dto)
+    {
+        var mode = string.Equals(dto.Mode, "Normal", StringComparison.OrdinalIgnoreCase) ? "Normal" : "Live";
+        await _repository.SaveKonnectQuizModeAsync(sessionId, mode);
+        return Ok(new { message = "Konnect Quiz mode saved successfully", mode });
+    }
+
+    [HttpPost("sessions/{sessionId}/konnect-normal-submissions")]
+    public async Task<IActionResult> SubmitNormalKonnectQuiz(string sessionId, [FromBody] SubmitNormalKonnectQuizDto dto) =>
+        Ok(await _repository.SaveNormalKonnectQuizSubmissionAsync(sessionId, dto));
+
+    [HttpGet("sessions/{sessionId}/konnect-normal-submissions/{studentId:int}")]
+    public async Task<IActionResult> GetNormalKonnectQuizSubmission(string sessionId, int studentId)
+    {
+        var submission = await _repository.GetNormalKonnectQuizSubmissionAsync(sessionId, studentId);
+        return submission is null ? NotFound() : Ok(submission);
+    }
+
+    [HttpPost("sessions/{sessionId}/follow-up-submissions")]
+    public async Task<IActionResult> SubmitFollowUpQuiz(string sessionId, [FromBody] SubmitNormalKonnectQuizDto dto) =>
+        Ok(await _repository.SaveFollowUpQuizSubmissionAsync(sessionId, dto));
+
+    [HttpGet("sessions/{sessionId}/follow-up-submissions/{studentId:int}")]
+    public async Task<IActionResult> GetFollowUpQuizSubmission(string sessionId, int studentId)
+    {
+        var submission = await _repository.GetFollowUpQuizSubmissionAsync(sessionId, studentId);
+        return submission is null ? NotFound() : Ok(submission);
     }
 
     [HttpPost("programming/execute")]
