@@ -1188,7 +1188,9 @@ public sealed class PortalRepository
         return rows > 0;
     }
 
-    private Task<int> EnsurePortalSessionColumnsAsync() => ExecuteNonQueryAsync(@"
+    private async Task EnsurePortalSessionColumnsAsync()
+    {
+        await ExecuteNonQueryAsync(@"
         IF OBJECT_ID('dbo.TrainingSessions', 'U') IS NULL
         BEGIN
             CREATE TABLE dbo.TrainingSessions (
@@ -1205,12 +1207,15 @@ public sealed class PortalRepository
                 BatchSchedulesJson NVARCHAR(MAX) NULL,
                 BatchAccessControlJson NVARCHAR(MAX) NULL
             );
-        END;
+        END;");
+        // SQL Server compiles a batch before executing ALTER TABLE statements.
+        // Add legacy-schema columns in a separate batch before any statement references them.
+        await ExecuteNonQueryAsync(@"
         IF COL_LENGTH('dbo.TrainingSessions','BatchesJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchesJson NVARCHAR(MAX) NULL;
         IF COL_LENGTH('dbo.TrainingSessions','AssessmentsJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD AssessmentsJson NVARCHAR(MAX) NULL;
         IF COL_LENGTH('dbo.TrainingSessions','BatchSchedulesJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchSchedulesJson NVARCHAR(MAX) NULL;
-        IF COL_LENGTH('dbo.TrainingSessions','BatchAccessControlJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchAccessControlJson NVARCHAR(MAX) NULL;
-
+        IF COL_LENGTH('dbo.TrainingSessions','BatchAccessControlJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchAccessControlJson NVARCHAR(MAX) NULL;");
+        await ExecuteNonQueryAsync(@"
         IF NOT EXISTS (SELECT 1 FROM dbo.TrainingSessions)
         BEGIN
             DECLARE @dsaTrainingId INT = ISNULL((SELECT TOP 1 TrainingId FROM dbo.TrainingPrograms WHERE TrainingType LIKE '%Data Structures%'), 1);
@@ -1230,6 +1235,7 @@ public sealed class PortalRepository
                 '{}'
             );
         END;");
+    }
 
     public async Task<List<PortalSessionDto>> GetPortalSessionsAsync()
     {
