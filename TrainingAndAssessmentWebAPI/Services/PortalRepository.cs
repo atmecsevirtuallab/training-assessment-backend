@@ -1189,19 +1189,58 @@ public sealed class PortalRepository
     }
 
     private Task<int> EnsurePortalSessionColumnsAsync() => ExecuteNonQueryAsync(@"
+        IF OBJECT_ID('dbo.TrainingSessions', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.TrainingSessions (
+                SessionId NVARCHAR(30) NOT NULL PRIMARY KEY,
+                TrainingId INT NOT NULL,
+                SessionName NVARCHAR(200) NOT NULL,
+                SessionDate DATE NOT NULL,
+                StartTime NVARCHAR(10) NOT NULL,
+                EndTime NVARCHAR(10) NOT NULL,
+                Venue NVARCHAR(150) NOT NULL,
+                Status NVARCHAR(20) NOT NULL,
+                BatchesJson NVARCHAR(MAX) NULL,
+                AssessmentsJson NVARCHAR(MAX) NULL,
+                BatchSchedulesJson NVARCHAR(MAX) NULL,
+                BatchAccessControlJson NVARCHAR(MAX) NULL
+            );
+        END;
         IF COL_LENGTH('dbo.TrainingSessions','BatchesJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchesJson NVARCHAR(MAX) NULL;
         IF COL_LENGTH('dbo.TrainingSessions','AssessmentsJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD AssessmentsJson NVARCHAR(MAX) NULL;
         IF COL_LENGTH('dbo.TrainingSessions','BatchSchedulesJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchSchedulesJson NVARCHAR(MAX) NULL;
-        IF COL_LENGTH('dbo.TrainingSessions','BatchAccessControlJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchAccessControlJson NVARCHAR(MAX) NULL;");
+        IF COL_LENGTH('dbo.TrainingSessions','BatchAccessControlJson') IS NULL ALTER TABLE dbo.TrainingSessions ADD BatchAccessControlJson NVARCHAR(MAX) NULL;
+
+        IF NOT EXISTS (SELECT 1 FROM dbo.TrainingSessions)
+        BEGIN
+            DECLARE @dsaTrainingId INT = ISNULL((SELECT TOP 1 TrainingId FROM dbo.TrainingPrograms WHERE TrainingType LIKE '%Data Structures%'), 1);
+            INSERT INTO dbo.TrainingSessions (SessionId, TrainingId, SessionName, SessionDate, StartTime, EndTime, Venue, Status, BatchesJson, AssessmentsJson, BatchSchedulesJson, BatchAccessControlJson)
+            VALUES (
+                'DSA-S1',
+                @dsaTrainingId,
+                'Session 1: OOPS Essentials & Overview of Data Structures',
+                CAST(GETDATE() AS date),
+                '09:00',
+                '17:00',
+                'Main Lab',
+                'Open',
+                '[""2026-CSE-A"",""2026-CSE-B"",""2026-ISE-A""]',
+                '[""Programming Exercise 1"",""Descriptive Assignment 1"",""Session Quiz 1""]',
+                '{}',
+                '{}'
+            );
+        END;");
 
     public async Task<List<PortalSessionDto>> GetPortalSessionsAsync()
     {
         await EnsurePortalSessionColumnsAsync();
         return await QueryAsync(@"
-            SELECT ts.SessionId,ts.SessionName,tp.TrainingType,ts.Status,
-                   ISNULL(ts.BatchesJson,'[]') BatchesJson,ISNULL(ts.AssessmentsJson,'[]') AssessmentsJson,
-                   ISNULL(ts.BatchSchedulesJson,'{}') BatchSchedulesJson,ISNULL(ts.BatchAccessControlJson,'{}') BatchAccessControlJson
-            FROM TrainingSessions ts INNER JOIN TrainingPrograms tp ON tp.TrainingId=ts.TrainingId ORDER BY ts.SessionId", reader => new PortalSessionDto(
+            SELECT ts.SessionId, ts.SessionName, ISNULL(tp.TrainingType, 'Data Structures and Algorithms') AS TrainingType, ts.Status,
+                   ISNULL(ts.BatchesJson,'[]') BatchesJson, ISNULL(ts.AssessmentsJson,'[]') AssessmentsJson,
+                   ISNULL(ts.BatchSchedulesJson,'{}') BatchSchedulesJson, ISNULL(ts.BatchAccessControlJson,'{}') BatchAccessControlJson
+            FROM dbo.TrainingSessions ts
+            LEFT JOIN dbo.TrainingPrograms tp ON tp.TrainingId = ts.TrainingId
+            ORDER BY ts.SessionId", reader => new PortalSessionDto(
                 reader.GetString("SessionId"), reader.GetString("SessionName"), reader.GetString("TrainingType"), reader.GetString("Status"),
                 System.Text.Json.JsonSerializer.Deserialize<List<string>>(reader.GetString("BatchesJson")) ?? [],
                 System.Text.Json.JsonSerializer.Deserialize<List<string>>(reader.GetString("AssessmentsJson")) ?? [],
@@ -1211,9 +1250,9 @@ public sealed class PortalRepository
     public async Task SavePortalSessionAsync(SavePortalSessionDto dto)
     {
         await EnsurePortalSessionColumnsAsync();
-        var trainingId = await ExecuteScalarAsync("SELECT TOP 1 TrainingId FROM TrainingPrograms WHERE TrainingType=@program ORDER BY TrainingId",
+        var trainingIdObj = await ExecuteScalarAsync("SELECT TOP 1 TrainingId FROM TrainingPrograms WHERE TrainingType=@program ORDER BY TrainingId",
             new SqlParameter("@program", dto.TrainingProgram));
-        if (trainingId is null || trainingId is DBNull) throw new InvalidOperationException("The selected training program does not exist.");
+        int trainingId = (trainingIdObj is null || trainingIdObj is DBNull) ? 1 : Convert.ToInt32(trainingIdObj);
         var status = dto.Status is "Open" or "Closed" ? dto.Status : "Closed";
         await ExecuteNonQueryAsync(@"
             IF EXISTS(SELECT 1 FROM TrainingSessions WHERE SessionId=@id)
@@ -1223,7 +1262,7 @@ public sealed class PortalRepository
                 INSERT INTO TrainingSessions(SessionId,TrainingId,SessionName,SessionDate,StartTime,EndTime,Venue,Status,
                     BatchesJson,AssessmentsJson,BatchSchedulesJson,BatchAccessControlJson)
                 VALUES(@id,@trainingId,@name,CAST(GETDATE() AS date),'00:00','00:00','',@status,@batches,@assessments,@schedules,@access);",
-            new SqlParameter("@id", dto.SessionId), new SqlParameter("@trainingId", Convert.ToInt32(trainingId)),
+            new SqlParameter("@id", dto.SessionId), new SqlParameter("@trainingId", trainingId),
             new SqlParameter("@name", dto.SessionName), new SqlParameter("@status", status),
             new SqlParameter("@batches", System.Text.Json.JsonSerializer.Serialize(dto.Batches ?? [])),
             new SqlParameter("@assessments", System.Text.Json.JsonSerializer.Serialize(dto.Assessments ?? [])),
