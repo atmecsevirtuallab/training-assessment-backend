@@ -37,7 +37,7 @@ public sealed class InteractiveProgramService : IDisposable
             {
                 var source = Path.Combine(workDirectory, "solution.py");
                 await File.WriteAllTextAsync(source, request.Code);
-                command = section["PythonPath"] ?? "python";
+                command = ResolveToolPath(section["PythonPath"], OperatingSystem.IsWindows() ? "python" : "python3");
                 arguments.Add(source);
             }
             else if (language == "java")
@@ -47,13 +47,13 @@ public sealed class InteractiveProgramService : IDisposable
                 var className = match.Success ? match.Groups[1].Value : "Main";
                 var source = Path.Combine(workDirectory, $"{className}.java");
                 await File.WriteAllTextAsync(source, request.Code);
-                var compile = await RunToCompletionAsync(section["JavaCompilerPath"] ?? "javac", [source], workDirectory);
+                var compile = await RunToCompletionAsync(ResolveToolPath(section["JavaCompilerPath"], "javac"), [source], workDirectory);
                 if (compile.ExitCode != 0)
                 {
                     Directory.Delete(workDirectory, true);
                     return new(null, string.Empty, compile.Error, false);
                 }
-                command = section["JavaRuntimePath"] ?? "java";
+                command = ResolveToolPath(section["JavaRuntimePath"], "java");
                 arguments.AddRange(["-cp", workDirectory, className]);
             }
             else if (language == "c")
@@ -62,7 +62,7 @@ public sealed class InteractiveProgramService : IDisposable
                 var executableName = OperatingSystem.IsWindows() ? "solution.exe" : "solution";
                 var executable = Path.Combine(workDirectory, executableName);
                 await File.WriteAllTextAsync(source, request.Code);
-                var compile = await RunToCompletionAsync(section["CCompilerPath"] ?? "gcc", [source, "-o", executable], workDirectory);
+                var compile = await RunToCompletionAsync(ResolveToolPath(section["CCompilerPath"], "gcc"), [source, "-o", executable], workDirectory);
                 if (compile.ExitCode != 0)
                 {
                     Directory.Delete(workDirectory, true);
@@ -144,6 +144,13 @@ public sealed class InteractiveProgramService : IDisposable
         };
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
         return info;
+    }
+
+    private static string ResolveToolPath(string? configuredPath, string fallbackCommand)
+    {
+        if (string.IsNullOrWhiteSpace(configuredPath)) return fallbackCommand;
+        if (!Path.IsPathRooted(configuredPath) || File.Exists(configuredPath)) return configuredPath;
+        return fallbackCommand;
     }
 
     private static async Task<(int ExitCode, string Error)> RunToCompletionAsync(string command, IEnumerable<string> arguments, string workDirectory)

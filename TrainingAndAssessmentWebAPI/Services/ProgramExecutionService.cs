@@ -16,10 +16,10 @@ public sealed class ProgramExecutionService
     public ProgramExecutionService(IConfiguration configuration)
     {
         var section = configuration.GetSection("CodeExecution");
-        _cCompilerPath = section["CCompilerPath"] ?? "gcc";
-        _javaCompilerPath = section["JavaCompilerPath"] ?? "javac";
-        _javaRuntimePath = section["JavaRuntimePath"] ?? "java";
-        _pythonPath = section["PythonPath"] ?? "python";
+        _cCompilerPath = ResolveToolPath(section["CCompilerPath"], "gcc");
+        _javaCompilerPath = ResolveToolPath(section["JavaCompilerPath"], "javac");
+        _javaRuntimePath = ResolveToolPath(section["JavaRuntimePath"], "java");
+        _pythonPath = ResolveToolPath(section["PythonPath"], OperatingSystem.IsWindows() ? "python" : "python3");
         _compileTimeoutMs = Math.Max(1, section.GetValue("CompileTimeoutSeconds", 15)) * 1000;
         _executionTimeoutMs = Math.Max(1, section.GetValue("ExecutionTimeoutSeconds", 5)) * 1000;
     }
@@ -75,10 +75,21 @@ public sealed class ProgramExecutionService
             }
             return new(null, results);
         }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or FileNotFoundException or DirectoryNotFoundException)
+        {
+            return new($"The {request.Language} compiler/runtime is unavailable on the execution server. Please contact the administrator. ({ex.Message})", new());
+        }
         finally
         {
             try { Directory.Delete(workDir, true); } catch { }
         }
+    }
+
+    private static string ResolveToolPath(string? configuredPath, string fallbackCommand)
+    {
+        if (string.IsNullOrWhiteSpace(configuredPath)) return fallbackCommand;
+        if (!Path.IsPathRooted(configuredPath) || File.Exists(configuredPath)) return configuredPath;
+        return fallbackCommand;
     }
 
     private static string Normalize(string value) => value.Replace("\r\n", "\n").Trim();
