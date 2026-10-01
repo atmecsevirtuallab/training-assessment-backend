@@ -88,6 +88,7 @@ public sealed class ProgramExecutionService
     private static string ResolveToolPath(string? configuredPath, string fallbackCommand)
     {
         if (string.IsNullOrWhiteSpace(configuredPath)) return fallbackCommand;
+        if (!OperatingSystem.IsWindows() && Regex.IsMatch(configuredPath, @"^[A-Za-z]:[\\/]")) return fallbackCommand;
         if (!Path.IsPathRooted(configuredPath) || File.Exists(configuredPath)) return configuredPath;
         return fallbackCommand;
     }
