@@ -18,9 +18,18 @@ public sealed class InteractiveProgramService : IDisposable
     }
 
     private readonly ConcurrentDictionary<string, Session> _sessions = new();
+    private readonly ConcurrentDictionary<string, byte> _remoteSessions = new();
     private readonly IConfiguration _configuration;
+    private readonly HttpClient _httpClient;
+    private readonly string? _remoteBaseUrl;
 
-    public InteractiveProgramService(IConfiguration configuration) => _configuration = configuration;
+    public InteractiveProgramService(IConfiguration configuration, IHttpClientFactory httpClientFactory)
+    {
+        _configuration = configuration;
+        _httpClient = httpClientFactory.CreateClient();
+        _httpClient.Timeout = TimeSpan.FromSeconds(90);
+        _remoteBaseUrl = configuration.GetSection("CodeExecution")["RemoteBaseUrl"]?.TrimEnd('/');
+    }
 
     public async Task<InteractiveProgramResponseDto> StartAsync(StartInteractiveProgramDto request)
     {
@@ -92,12 +101,16 @@ public sealed class InteractiveProgramService : IDisposable
         catch (Exception ex)
         {
             try { Directory.Delete(workDirectory, true); } catch { }
+            if (!string.IsNullOrWhiteSpace(_remoteBaseUrl) && ex is System.ComponentModel.Win32Exception or FileNotFoundException or DirectoryNotFoundException)
+                return await StartRemoteAsync(request);
             return new(null, string.Empty, ex.Message, false);
         }
     }
 
     public async Task<InteractiveProgramResponseDto> SendInputAsync(string sessionId, string input)
     {
+        if (_remoteSessions.ContainsKey(sessionId))
+            return await SendRemoteInputAsync(sessionId, input);
         if (!_sessions.TryGetValue(sessionId, out var session))
             return new(null, string.Empty, "Execution session has ended. Click Execute to start again.", false);
         if (session.Process.HasExited) return ReadResponse(sessionId, session);
@@ -110,7 +123,53 @@ public sealed class InteractiveProgramService : IDisposable
 
     public void Stop(string sessionId)
     {
+        if (_remoteSessions.TryRemove(sessionId, out _))
+        {
+            _ = StopRemoteAsync(sessionId);
+            return;
+        }
         if (_sessions.TryRemove(sessionId, out var session)) DisposeSession(session);
+    }
+
+    private async Task<InteractiveProgramResponseDto> StartRemoteAsync(StartInteractiveProgramDto request)
+    {
+        try
+        {
+            using var response = await _httpClient.PostAsJsonAsync($"{_remoteBaseUrl}/interactive/start", request);
+            response.EnsureSuccessStatusCode();
+            var result = await response.Content.ReadFromJsonAsync<InteractiveProgramResponseDto>()
+                ?? new(null, string.Empty, "The remote execution service returned an empty response.", false);
+            if (result.IsRunning && !string.IsNullOrWhiteSpace(result.SessionId)) _remoteSessions[result.SessionId] = 0;
+            return result;
+        }
+        catch (Exception ex)
+        {
+            return new(null, string.Empty, $"The remote execution service is unavailable. Please try again. ({ex.Message})", false);
+        }
+    }
+
+    private async Task<InteractiveProgramResponseDto> SendRemoteInputAsync(string sessionId, string input)
+    {
+        try
+        {
+            using var response = await _httpClient.PostAsJsonAsync($"{_remoteBaseUrl}/interactive/{Uri.EscapeDataString(sessionId)}/input", new InteractiveProgramInputDto(input));
+            response.EnsureSuccessStatusCode();
+            var result = await response.Content.ReadFromJsonAsync<InteractiveProgramResponseDto>()
+                ?? new(null, string.Empty, "The remote execution service returned an empty response.", false);
+            if (!result.IsRunning) _remoteSessions.TryRemove(sessionId, out _);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _remoteSessions.TryRemove(sessionId, out _);
+            return new(null, string.Empty, $"Remote execution failed. ({ex.Message})", false);
+        }
+    }
+
+    private async Task StopRemoteAsync(string sessionId)
+    {
+        try { await _httpClient.DeleteAsync($"{_remoteBaseUrl}/interactive/{Uri.EscapeDataString(sessionId)}"); }
+        catch { }
     }
 
     private InteractiveProgramResponseDto ReadResponse(string sessionId, Session session)

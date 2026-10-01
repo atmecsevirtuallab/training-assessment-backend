@@ -12,8 +12,10 @@ public sealed class ProgramExecutionService
     private readonly string _pythonPath;
     private readonly int _compileTimeoutMs;
     private readonly int _executionTimeoutMs;
+    private readonly HttpClient _httpClient;
+    private readonly string? _remoteBaseUrl;
 
-    public ProgramExecutionService(IConfiguration configuration)
+    public ProgramExecutionService(IConfiguration configuration, IHttpClientFactory httpClientFactory)
     {
         var section = configuration.GetSection("CodeExecution");
         _cCompilerPath = ResolveToolPath(section["CCompilerPath"], "gcc");
@@ -22,6 +24,9 @@ public sealed class ProgramExecutionService
         _pythonPath = ResolveToolPath(section["PythonPath"], OperatingSystem.IsWindows() ? "python" : "python3");
         _compileTimeoutMs = Math.Max(1, section.GetValue("CompileTimeoutSeconds", 15)) * 1000;
         _executionTimeoutMs = Math.Max(1, section.GetValue("ExecutionTimeoutSeconds", 5)) * 1000;
+        _httpClient = httpClientFactory.CreateClient();
+        _httpClient.Timeout = TimeSpan.FromSeconds(90);
+        _remoteBaseUrl = section["RemoteBaseUrl"]?.TrimEnd('/');
     }
 
     public async Task<ProgramExecutionResponseDto> ExecuteAsync(ExecuteProgramDto request)
@@ -77,11 +82,28 @@ public sealed class ProgramExecutionService
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or FileNotFoundException or DirectoryNotFoundException)
         {
+            if (!string.IsNullOrWhiteSpace(_remoteBaseUrl))
+                return await ExecuteRemoteAsync(request);
             return new($"The {request.Language} compiler/runtime is unavailable on the execution server. Please contact the administrator. ({ex.Message})", new());
         }
         finally
         {
             try { Directory.Delete(workDir, true); } catch { }
+        }
+    }
+
+    private async Task<ProgramExecutionResponseDto> ExecuteRemoteAsync(ExecuteProgramDto request)
+    {
+        try
+        {
+            using var response = await _httpClient.PostAsJsonAsync($"{_remoteBaseUrl}/execute", request);
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadFromJsonAsync<ProgramExecutionResponseDto>()
+                ?? new("The remote execution service returned an empty response.", new());
+        }
+        catch (Exception ex)
+        {
+            return new($"The remote execution service is unavailable. Please try again. ({ex.Message})", new());
         }
     }
 
