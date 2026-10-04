@@ -56,6 +56,14 @@ public sealed class PortalDataController : ControllerBase
         return user is null ? Unauthorized(new { message = "Invalid username, password, or role." }) : Ok(user);
     }
 
+    [HttpPost("auth/logout")]
+    public async Task<IActionResult> Logout([FromBody] LogoutRequestDto dto)
+    {
+        if (dto.LoginHistoryId <= 0) return BadRequest(new { message = "A valid login session is required." });
+        await _repository.RecordLogoutAsync(dto.LoginHistoryId);
+        return Ok(new { message = "Logout recorded successfully." });
+    }
+
     [HttpPost("auth/change-password")]
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequestDto dto)
     {

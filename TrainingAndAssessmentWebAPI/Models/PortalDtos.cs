@@ -220,6 +220,7 @@ public sealed record SaveStudentDto(
     string Status);
 
 public sealed record LoginRequestDto(string Role, string Username, string Password);
+public sealed record LogoutRequestDto(long LoginHistoryId);
 public sealed record ChangePasswordRequestDto(string AccountId, string CurrentPassword, string NewPassword);
 public sealed record AdminResetPasswordRequestDto(string NewPassword);
 public sealed record SendOtpRequestDto(string Email);
@@ -264,7 +265,8 @@ public sealed record AuthenticatedUserDto(
     string? Usn,
     string? CurrentSemester,
     string DepartmentOrBatch,
-    bool MustUpdateProfile = false);
+    bool MustUpdateProfile = false,
+    long LoginHistoryId = 0);
 
 public sealed record SaveBatchDto(
     string BatchCode,

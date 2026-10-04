@@ -267,6 +267,10 @@ public sealed class PortalRepository
     public async Task<List<TrainingProgramDto>> GetTrainingsAsync()
     {
         await EnsureTrainingOwnershipSchemaAsync();
+        await ExecuteNonQueryAsync(@"
+            UPDATE TrainingPrograms
+            SET Status='Closed'
+            WHERE EndDate < CAST(GETDATE() AS date) AND Status <> 'Closed';");
         return await QueryAsync(@"
         SELECT tp.TrainingId, tp.TrainingType, tp.Objectives, tp.Outcome, tp.TargetAudience, tp.AcademicYear, tp.Duration, tp.Mode,
                tp.StartDate, tp.EndDate, tp.Status,
@@ -545,16 +549,27 @@ public sealed class PortalRepository
         var parameters = new List<SqlParameter>();
         if (!string.IsNullOrWhiteSpace(role) && !role.Equals("All", StringComparison.OrdinalIgnoreCase))
         {
-            where.Add("AccountType = @role");
+            where.Add("r.RoleName = @role");
             parameters.Add(new SqlParameter("@role", role));
         }
         if (!string.IsNullOrWhiteSpace(accountId))
         {
-            where.Add("AccountId = @accountId");
+            where.Add("lh.AccountId = @accountId");
             parameters.Add(new SqlParameter("@accountId", accountId));
         }
 
-        var sql = "SELECT * FROM vw_LoginHistoryWithTotals"
+        var sql = @"SELECT lh.LoginHistoryId, r.RoleName AS AccountType, a.AccountId, a.Name,
+                   lh.LoggedInAt AS LastLoggedIn, lh.LoggedOutAt AS LastLoggedOut,
+                   CASE WHEN lh.LoggedOutAt IS NULL
+                        THEN DATEDIFF(minute, lh.LoggedInAt, SYSUTCDATETIME())
+                        ELSE lh.StayOnPortalMinutes END AS StayOnPortalMinutes,
+                   SUM(CASE WHEN lh.LoggedOutAt IS NULL
+                            THEN DATEDIFF(minute, lh.LoggedInAt, SYSUTCDATETIME())
+                            ELSE lh.StayOnPortalMinutes END)
+                       OVER (PARTITION BY lh.AccountId) AS TotalStayOnPortalMinutes
+            FROM LoginHistory lh
+            INNER JOIN Accounts a ON a.AccountId = lh.AccountId
+            INNER JOIN Roles r ON r.RoleId = a.RoleId"
             + (where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "")
             + " ORDER BY LastLoggedIn DESC";
 
@@ -562,8 +577,10 @@ public sealed class PortalRepository
             reader.GetInt64("LoginHistoryId"),
             reader.GetString("AccountType"),
             reader.GetString("Name"),
-            reader.GetDateTime("LastLoggedIn"),
-            reader.GetNullableDateTime("LastLoggedOut"),
+            DateTime.SpecifyKind(reader.GetDateTime("LastLoggedIn"), DateTimeKind.Utc),
+            reader["LastLoggedOut"] == DBNull.Value
+                ? null
+                : DateTime.SpecifyKind(reader.GetDateTime("LastLoggedOut"), DateTimeKind.Utc),
             reader.GetInt32("StayOnPortalMinutes"),
             reader.GetInt32("TotalStayOnPortalMinutes")), parameters.ToArray());
     }
@@ -1403,10 +1420,11 @@ public sealed class PortalRepository
 
         if (!valid) return null;
 
-        await ExecuteNonQueryAsync(@"
+        var loginHistoryId = Convert.ToInt64(await ExecuteScalarAsync(@"
             INSERT INTO LoginHistory(AccountId, LoggedInAt, LoggedOutAt, StayOnPortalMinutes)
-            VALUES(@id, SYSUTCDATETIME(), DATEADD(minute, 35, SYSUTCDATETIME()), 35)",
-            new SqlParameter("@id", row.AccountId));
+            OUTPUT INSERTED.LoginHistoryId
+            VALUES(@id, SYSUTCDATETIME(), NULL, 0)",
+            new SqlParameter("@id", row.AccountId)));
 
         var effectiveEmail = !string.IsNullOrWhiteSpace(row.StudentEmail) && !row.StudentEmail.EndsWith("@pending.local") ? row.StudentEmail
 
@@ -1416,14 +1434,24 @@ public sealed class PortalRepository
         var isPasswordDefault = PasswordSecurity.Verify("student123", row.Hash) || (row.Usn != null && PasswordSecurity.Verify(row.Usn, row.Hash)) || string.IsNullOrWhiteSpace(row.Hash);
         var mustUpdateProfile = row.Role.Equals("Student", StringComparison.OrdinalIgnoreCase) && (isEmailPending || isPasswordDefault);
 
-        return new AuthenticatedUserDto(row.AccountId, row.Role, row.StudentId, row.Name, effectiveEmail, row.Usn, row.Semester, row.Department, mustUpdateProfile);
+        return new AuthenticatedUserDto(row.AccountId, row.Role, row.StudentId, row.Name, effectiveEmail, row.Usn, row.Semester, row.Department, mustUpdateProfile, loginHistoryId);
     }
+
+    public Task<int> RecordLogoutAsync(long loginHistoryId) => ExecuteNonQueryAsync(@"
+        UPDATE LoginHistory
+        SET LoggedOutAt = SYSUTCDATETIME(),
+            StayOnPortalMinutes = CASE
+                WHEN DATEDIFF(second, LoggedInAt, SYSUTCDATETIME()) <= 0 THEN 0
+                ELSE CEILING(DATEDIFF(second, LoggedInAt, SYSUTCDATETIME()) / 60.0)
+            END
+        WHERE LoginHistoryId = @loginHistoryId AND LoggedOutAt IS NULL",
+        new SqlParameter("@loginHistoryId", loginHistoryId));
 
     private async Task EnsureStudentAccountAsync(string username)
     {
         const string findSql = @"
             SELECT TOP 1 StudentId, USN, Name, CurrentSemester, EmailId, ContactNo, Status
-            FROM Students WHERE AccountId IS NULL AND (LOWER(USN) = LOWER(@username) OR LOWER(EmailId) = LOWER(@username))";
+            FROM Students WHERE LOWER(USN) = LOWER(@username) OR LOWER(EmailId) = LOWER(@username)";
         var students = await QueryAsync(findSql, r => new {
             Id = r.GetInt32("StudentId"), Usn = r.GetString("USN"), Name = r.GetString("Name"), Semester = r.GetString("CurrentSemester"),
             Email = r.GetString("EmailId"), Contact = r.GetString("ContactNo"), Status = r.GetString("Status")
@@ -1439,11 +1467,25 @@ public sealed class PortalRepository
             const string sql = @"
                 IF EXISTS (SELECT 1 FROM Students WITH (UPDLOCK, HOLDLOCK) WHERE StudentId = @studentId AND AccountId IS NULL)
                 BEGIN
-                    DECLARE @nextId int = ISNULL((SELECT MAX(TRY_CONVERT(int, SUBSTRING(AccountId, 4, 20))) FROM Accounts WHERE AccountId LIKE 'STD%'), 0) + 1;
-                    DECLARE @accountId varchar(30) = 'STD' + RIGHT('000000' + CONVERT(varchar(20), @nextId), 6);
-                    INSERT INTO Accounts (AccountId, RoleId, Name, DepartmentOrBatch, Email, ContactNo, Status, PasswordHash, CreatedAt)
-                    VALUES (@accountId, 4, @name, @department, @email, @contact, @status, @hash, SYSUTCDATETIME());
+                    DECLARE @accountId varchar(30) = (
+                        SELECT TOP 1 a.AccountId FROM Accounts a
+                        INNER JOIN Roles r ON r.RoleId=a.RoleId
+                        WHERE LOWER(r.RoleName)='student' AND LOWER(a.Email)=LOWER(@email));
+                    IF @accountId IS NULL
+                    BEGIN
+                        DECLARE @nextId int = ISNULL((SELECT MAX(TRY_CONVERT(int, SUBSTRING(AccountId, 4, 20))) FROM Accounts WHERE AccountId LIKE 'STD%'), 0) + 1;
+                        SET @accountId = 'STD' + RIGHT('000000' + CONVERT(varchar(20), @nextId), 6);
+                        INSERT INTO Accounts (AccountId, RoleId, Name, DepartmentOrBatch, Email, ContactNo, Status, PasswordHash, CreatedAt)
+                        VALUES (@accountId, 4, @name, @department, @email, @contact, @status, @hash, SYSUTCDATETIME());
+                    END
                     UPDATE Students SET AccountId = @accountId WHERE StudentId = @studentId;
+                END
+                ELSE IF NOT EXISTS (
+                    SELECT 1 FROM Accounts a INNER JOIN Students s ON s.AccountId=a.AccountId WHERE s.StudentId=@studentId)
+                BEGIN
+                    DECLARE @linkedAccountId varchar(30) = (SELECT AccountId FROM Students WHERE StudentId=@studentId);
+                    INSERT INTO Accounts (AccountId, RoleId, Name, DepartmentOrBatch, Email, ContactNo, Status, PasswordHash, CreatedAt)
+                    VALUES (@linkedAccountId, 4, @name, @department, @email, @contact, @status, @hash, SYSUTCDATETIME());
                 END";
             var effectiveEmail = !string.IsNullOrWhiteSpace(student.Email) ? student.Email.ToLowerInvariant() : $"{student.Usn.ToLowerInvariant()}@pending.local";
             await using var command = new SqlCommand(sql, connection, transaction);
@@ -1451,7 +1493,7 @@ public sealed class PortalRepository
                 new SqlParameter("@studentId", student.Id), new SqlParameter("@name", student.Name),
                 new SqlParameter("@department", $"Student - {student.Semester} Semester"), new SqlParameter("@email", effectiveEmail),
                 new SqlParameter("@contact", student.Contact), new SqlParameter("@status", student.Status),
-                new SqlParameter("@hash", PasswordSecurity.Hash("student123"))
+                new SqlParameter("@hash", PasswordSecurity.Hash(student.Usn))
             });
             await command.ExecuteNonQueryAsync();
             await transaction.CommitAsync();
