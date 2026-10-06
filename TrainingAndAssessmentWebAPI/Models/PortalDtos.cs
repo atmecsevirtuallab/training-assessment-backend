@@ -326,9 +326,9 @@ public sealed record SaveSessionPerformanceSnapshotDto(string PerformanceRowsJso
 public sealed record KonnectQuizModeDto(string SessionId, string Mode);
 public sealed record SubmitNormalKonnectQuizDto(int StudentId, string Usn, string StudentName, List<int?> Answers);
 public sealed record NormalKonnectQuizSubmissionDto(long SubmissionId, string SessionId, int StudentId, string Usn,
-    string StudentName, int Score, int MaxScore, DateTime SubmittedAt);
+    string StudentName, int Score, int MaxScore, DateTime SubmittedAt, List<int?> Answers);
 public sealed record FollowUpQuizSubmissionDto(long SubmissionId, string SessionId, int StudentId, string Usn,
-    string StudentName, int Score, int MaxScore, DateTime SubmittedAt);
+    string StudentName, int Score, int MaxScore, DateTime SubmittedAt, List<int?> Answers);
 
 public sealed record FeedbackSubmissionRowDto(
     long SlNo,

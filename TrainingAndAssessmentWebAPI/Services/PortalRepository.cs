@@ -953,7 +953,11 @@ public sealed class PortalRepository
                 new SqlParameter("@batch", batch))).ToHashSet();
             programming = programming.Where(x => allowedStudentIds.Contains(x.StudentId)).ToList();
         }
-        return programming.OrderByDescending(x => x.SubmittedAt).ToList();
+        return programming
+            .GroupBy(x => new { x.Assessment, x.ItemLabel, x.StudentId })
+            .Select(group => group.OrderByDescending(x => x.SubmittedAt).First())
+            .OrderByDescending(x => x.SubmittedAt)
+            .ToList();
     }
 
     public async Task<bool> MoveStudentToBatchAsync(int studentId, string batchName)
@@ -1036,12 +1040,11 @@ public sealed class PortalRepository
             if (selected.HasValue && correct.HasValue && selected.Value == correct.Value) score += questions[i].Marks;
         }
         var submittedAt = DateTime.UtcNow;
-        await ExecuteNonQueryAsync(@"MERGE NormalKonnectQuizSubmissions target
-            USING(SELECT @sessionId SessionId,@studentId StudentId) source
-            ON target.SessionId=source.SessionId AND target.StudentId=source.StudentId
-            WHEN MATCHED THEN UPDATE SET Usn=@usn,StudentName=@name,AnswersJson=@answers,Score=@score,MaxScore=@max,SubmittedAt=@at
-            WHEN NOT MATCHED THEN INSERT(SessionId,StudentId,Usn,StudentName,AnswersJson,Score,MaxScore,SubmittedAt)
-            VALUES(@sessionId,@studentId,@usn,@name,@answers,@score,@max,@at);",
+        await ExecuteNonQueryAsync(@"INSERT INTO NormalKonnectQuizSubmissions
+                (SessionId,StudentId,Usn,StudentName,AnswersJson,Score,MaxScore,SubmittedAt)
+            SELECT @sessionId,@studentId,@usn,@name,@answers,@score,@max,@at
+            WHERE NOT EXISTS(SELECT 1 FROM NormalKonnectQuizSubmissions WITH (UPDLOCK,HOLDLOCK)
+                WHERE SessionId=@sessionId AND StudentId=@studentId);",
             new SqlParameter("@sessionId",sessionId),new SqlParameter("@studentId",dto.StudentId),new SqlParameter("@usn",dto.Usn),
             new SqlParameter("@name",dto.StudentName),new SqlParameter("@answers",JsonSerializer.Serialize(dto.Answers)),
             new SqlParameter("@score",score),new SqlParameter("@max",maxScore),new SqlParameter("@at",submittedAt));
@@ -1051,10 +1054,11 @@ public sealed class PortalRepository
     public async Task<NormalKonnectQuizSubmissionDto?> GetNormalKonnectQuizSubmissionAsync(string sessionId, int studentId)
     {
         await EnsureKonnectQuizModeTablesAsync();
-        var rows = await QueryAsync(@"SELECT SubmissionId,SessionId,StudentId,Usn,StudentName,Score,MaxScore,SubmittedAt
+        var rows = await QueryAsync(@"SELECT SubmissionId,SessionId,StudentId,Usn,StudentName,Score,MaxScore,SubmittedAt,AnswersJson
             FROM NormalKonnectQuizSubmissions WHERE SessionId=@sessionId AND StudentId=@studentId",
             r => new NormalKonnectQuizSubmissionDto(Convert.ToInt64(r["SubmissionId"]),r.GetString("SessionId"),r.GetInt32("StudentId"),
-                r.GetString("Usn"),r.GetString("StudentName"),r.GetInt32("Score"),r.GetInt32("MaxScore"),r.GetDateTime("SubmittedAt")),
+                r.GetString("Usn"),r.GetString("StudentName"),r.GetInt32("Score"),r.GetInt32("MaxScore"),r.GetDateTime("SubmittedAt"),
+                JsonSerializer.Deserialize<List<int?>>(r.GetString("AnswersJson")) ?? new()),
             new SqlParameter("@sessionId",sessionId),new SqlParameter("@studentId",studentId));
         return rows.FirstOrDefault();
     }
@@ -1072,12 +1076,11 @@ public sealed class PortalRepository
             if (selected.HasValue && correct.HasValue && selected.Value == correct.Value) score += questions[i].Marks;
         }
         var submittedAt = DateTime.UtcNow;
-        await ExecuteNonQueryAsync(@"MERGE FollowUpQuizSubmissions target
-            USING(SELECT @sessionId SessionId,@studentId StudentId) source
-            ON target.SessionId=source.SessionId AND target.StudentId=source.StudentId
-            WHEN MATCHED THEN UPDATE SET Usn=@usn,StudentName=@name,AnswersJson=@answers,Score=@score,MaxScore=@max,SubmittedAt=@at
-            WHEN NOT MATCHED THEN INSERT(SessionId,StudentId,Usn,StudentName,AnswersJson,Score,MaxScore,SubmittedAt)
-            VALUES(@sessionId,@studentId,@usn,@name,@answers,@score,@max,@at);",
+        await ExecuteNonQueryAsync(@"INSERT INTO FollowUpQuizSubmissions
+                (SessionId,StudentId,Usn,StudentName,AnswersJson,Score,MaxScore,SubmittedAt)
+            SELECT @sessionId,@studentId,@usn,@name,@answers,@score,@max,@at
+            WHERE NOT EXISTS(SELECT 1 FROM FollowUpQuizSubmissions WITH (UPDLOCK,HOLDLOCK)
+                WHERE SessionId=@sessionId AND StudentId=@studentId);",
             new SqlParameter("@sessionId",sessionId),new SqlParameter("@studentId",dto.StudentId),new SqlParameter("@usn",dto.Usn),
             new SqlParameter("@name",dto.StudentName),new SqlParameter("@answers",JsonSerializer.Serialize(dto.Answers)),
             new SqlParameter("@score",score),new SqlParameter("@max",maxScore),new SqlParameter("@at",submittedAt));
@@ -1087,10 +1090,11 @@ public sealed class PortalRepository
     public async Task<FollowUpQuizSubmissionDto?> GetFollowUpQuizSubmissionAsync(string sessionId, int studentId)
     {
         await EnsureFollowUpQuizSubmissionsTableAsync();
-        var rows = await QueryAsync(@"SELECT SubmissionId,SessionId,StudentId,Usn,StudentName,Score,MaxScore,SubmittedAt
+        var rows = await QueryAsync(@"SELECT SubmissionId,SessionId,StudentId,Usn,StudentName,Score,MaxScore,SubmittedAt,AnswersJson
             FROM FollowUpQuizSubmissions WHERE SessionId=@sessionId AND StudentId=@studentId",
             r => new FollowUpQuizSubmissionDto(Convert.ToInt64(r["SubmissionId"]),r.GetString("SessionId"),r.GetInt32("StudentId"),
-                r.GetString("Usn"),r.GetString("StudentName"),r.GetInt32("Score"),r.GetInt32("MaxScore"),r.GetDateTime("SubmittedAt")),
+                r.GetString("Usn"),r.GetString("StudentName"),r.GetInt32("Score"),r.GetInt32("MaxScore"),r.GetDateTime("SubmittedAt"),
+                JsonSerializer.Deserialize<List<int?>>(r.GetString("AnswersJson")) ?? new()),
             new SqlParameter("@sessionId",sessionId),new SqlParameter("@studentId",studentId));
         return rows.FirstOrDefault();
     }
