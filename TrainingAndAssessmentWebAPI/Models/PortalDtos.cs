@@ -342,3 +342,20 @@ public sealed record FeedbackSubmissionRowDto(
 
 public sealed record SessionAttendanceRecordDto(int StudentId, bool Present, bool Absent, string? Remarks);
 public sealed record SaveSessionAttendanceDto(string SessionId, string Batch, string RecordedAt, List<SessionAttendanceRecordDto> Records);
+public sealed record TrainingAttendanceSessionDto(string SessionId, string SessionName);
+public sealed record TrainingAttendanceRowDto(
+    int StudentId,
+    string Name,
+    string Usn,
+    string Batch,
+    Dictionary<string, string> Sessions,
+    int TotalConducted,
+    int TotalAttended,
+    double TotalAttendancePercentage);
+public sealed record TrainingAttendanceReportDto(
+    int TrainingId,
+    string TrainingName,
+    List<TrainingAttendanceSessionDto> Sessions,
+    List<TrainingAttendanceRowDto> Students);
+public sealed record AiGenerateRequestDto(string Prompt);
+public sealed record AiGenerateResponseDto(string Response, string Model);

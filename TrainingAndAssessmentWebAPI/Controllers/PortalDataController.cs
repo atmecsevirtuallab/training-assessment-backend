@@ -35,6 +35,24 @@ public sealed class PortalDataController : ControllerBase
 
     public sealed record FeedbackAnalysisRequest(string SessionName, int BatchStrength, int Submitted, double AverageRating);
 
+    [HttpPost("ai/generate")]
+    public async Task<IActionResult> GenerateAi([FromBody] AiGenerateRequestDto dto)
+    {
+        try
+        {
+            var result = await _ollama.GenerateAsync(dto.Prompt);
+            return Ok(new AiGenerateResponseDto(result.Response, result.Model));
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = $"AI service failed: {ex.Message}" });
+        }
+    }
+
     [HttpPost("live-quizzes")]
     public async Task<IActionResult> CreateLiveQuiz([FromBody] CreateLiveQuizDto dto, [FromServices] LiveQuizCoordinator coordinator) =>
         Ok(await coordinator.CreateAsync(dto));
@@ -475,6 +493,13 @@ public sealed class PortalDataController : ControllerBase
     {
         await _repository.SaveSessionAttendanceAsync(dto with { SessionId = sessionId, Batch = batch });
         return Ok(new { message = "Attendance saved successfully" });
+    }
+
+    [HttpGet("trainings/{trainingId:int}/attendance")]
+    public async Task<IActionResult> GetTrainingAttendance(int trainingId, [FromQuery] int? studentId = null)
+    {
+        var report = await _repository.GetTrainingAttendanceAsync(trainingId, studentId);
+        return report is null ? NotFound(new { message = "Training not found." }) : Ok(report);
     }
 
     [HttpGet("sessions/{sessionId}/descriptive-submissions/{itemLabel}")]

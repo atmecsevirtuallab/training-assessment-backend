@@ -2085,6 +2085,92 @@ public sealed class PortalRepository
         }
     }
 
+    public async Task<TrainingAttendanceReportDto?> GetTrainingAttendanceAsync(int trainingId, int? studentId = null)
+    {
+        await EnsurePortalSessionColumnsAsync();
+        await EnsureSessionAttendanceTableAsync();
+
+        var trainingNames = await QueryAsync(
+            "SELECT TrainingType FROM TrainingPrograms WHERE TrainingId=@trainingId",
+            r => r.GetString("TrainingType"), new SqlParameter("@trainingId", trainingId));
+        if (trainingNames.Count == 0) return null;
+
+        var sessions = await QueryAsync(@"
+            SELECT SessionId, SessionName
+            FROM TrainingSessions
+            WHERE TrainingId=@trainingId
+            ORDER BY SessionDate, SessionId",
+            r => new TrainingAttendanceSessionDto(r.GetString("SessionId"), r.GetString("SessionName")),
+            new SqlParameter("@trainingId", trainingId));
+
+        var students = await QueryAsync(@"
+            SELECT DISTINCT s.StudentId, s.Name, s.USN, b.BatchName
+            FROM Batches b
+            INNER JOIN BatchStudents bs ON bs.BatchId=b.BatchId
+            INNER JOIN Students s ON s.StudentId=bs.StudentId
+            WHERE b.TrainingId=@trainingId AND (@studentId IS NULL OR s.StudentId=@studentId)
+            ORDER BY b.BatchName, s.USN, s.Name",
+            r => new {
+                StudentId = r.GetInt32("StudentId"), Name = r.GetString("Name"),
+                Usn = r.GetString("USN"), Batch = r.GetString("BatchName")
+            },
+            new SqlParameter("@trainingId", trainingId),
+            new SqlParameter("@studentId", (object?)studentId ?? DBNull.Value));
+
+        var attendance = await QueryAsync(@"
+            SELECT sa.SessionId, sa.Batch, sa.StudentId, sa.Present, sa.Absent
+            FROM SessionAttendance sa
+            INNER JOIN TrainingSessions ts ON ts.SessionId=sa.SessionId
+            WHERE ts.TrainingId=@trainingId",
+            r => new {
+                SessionId = r.GetString("SessionId"), Batch = r.GetString("Batch"),
+                StudentId = r.GetInt32("StudentId"), Present = r.GetBoolean("Present"),
+                Absent = r.GetBoolean("Absent")
+            }, new SqlParameter("@trainingId", trainingId));
+
+        var conducted = attendance
+            .Select(a => $"{a.SessionId}\u001f{a.Batch}".ToUpperInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var recordLookup = attendance
+            .GroupBy(a => $"{a.SessionId}\u001f{a.Batch}\u001f{a.StudentId}".ToUpperInvariant())
+            .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+
+        var rows = students.Select(student => {
+            var cells = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var totalConducted = 0;
+            var totalAttended = 0;
+            foreach (var session in sessions)
+            {
+                var sessionBatchKey = $"{session.SessionId}\u001f{student.Batch}".ToUpperInvariant();
+                if (!conducted.Contains(sessionBatchKey))
+                {
+                    cells[session.SessionId] = "Not Conducted";
+                    continue;
+                }
+                totalConducted++;
+                var recordKey = $"{session.SessionId}\u001f{student.Batch}\u001f{student.StudentId}".ToUpperInvariant();
+                if (!recordLookup.TryGetValue(recordKey, out var record))
+                {
+                    cells[session.SessionId] = "Not Marked";
+                }
+                else if (record.Present)
+                {
+                    cells[session.SessionId] = "Present";
+                    totalAttended++;
+                }
+                else
+                {
+                    cells[session.SessionId] = "Absent";
+                }
+            }
+            var percentage = totalConducted == 0 ? 0 : Math.Round(totalAttended * 100d / totalConducted, 2);
+            return new TrainingAttendanceRowDto(student.StudentId, student.Name, student.Usn, student.Batch,
+                cells, totalConducted, totalAttended, percentage);
+        }).ToList();
+
+        return new TrainingAttendanceReportDto(trainingId, trainingNames[0], sessions, rows);
+    }
+
     private static async Task OpenConnectionWithRetryAsync(SqlConnection connection)
     {
         const int maxAttempts = 4;
