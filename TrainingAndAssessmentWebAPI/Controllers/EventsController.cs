@@ -1,0 +1,30 @@
+using Microsoft.AspNetCore.Mvc;
+using TrainingAndAssessmentWebAPI.Models;
+using TrainingAndAssessmentWebAPI.Services;
+
+namespace TrainingAndAssessmentWebAPI.Controllers;
+
+[ApiController,Route("api/events")]
+public sealed class EventsController(EventPortalRepository repo):ControllerBase
+{
+    string Token=>Request.Headers.Authorization.ToString().Replace("Bearer ","",StringComparison.OrdinalIgnoreCase).Trim();
+    async Task<(string Type,int Id)?> Identity()=>await repo.Auth(Token);
+    [HttpGet] public Task<List<object>> Events()=>repo.PublicEvents();
+    [HttpGet("mentors")] public Task<List<object>> Mentors()=>repo.Mentors();
+    [HttpGet("teams")] public Task<List<object>> Teams()=>repo.PublicTeams();
+    [HttpPost("registrations")] public async Task<IActionResult> Register(EventRegistrationRequest x){try{var y=await repo.Register(x);return Ok(new{registrationReference=y.RegistrationReference,teamNumber=y.TeamNumber,password=y.Password,message="Registration completed. Save the Student/Team number and password securely."});}catch(Exception e){return BadRequest(new{message=e.Message});}}
+    [HttpPost("team-login")] public async Task<IActionResult> TeamLogin(EventLoginRequest x)=>await repo.Login("Team",x) is{} y?Ok(y):Unauthorized(new{message="Invalid team number or password."});
+    [HttpPost("coordinator-login")] public async Task<IActionResult> CoordinatorLogin(EventLoginRequest x)=>await repo.Login("Coordinator",x) is{} y?Ok(y):Unauthorized(new{message="Invalid coordinator credentials."});
+    [HttpGet("team/me")] public async Task<IActionResult> Me(){var a=await Identity();return a is {Type:"Team"}?Ok(await repo.Team(a.Value.Id)):Unauthorized();}
+    [HttpPut("team/me")] public async Task<IActionResult> Update(TeamParticipationRequest x){var a=await Identity();if(a is not {Type:"Team"})return Unauthorized();try{await repo.Participation(a.Value.Id,x);return Ok(await repo.Team(a.Value.Id));}catch(Exception e){return BadRequest(new{message=e.Message});}}
+    [HttpPut("team/me/details")] public async Task<IActionResult> UpdateDetails(TeamDetailsUpdateRequest x){var a=await Identity();if(a is not {Type:"Team"})return Unauthorized();try{await repo.UpdateOwnDetails(a.Value.Id,x.Members);return Ok(await repo.Team(a.Value.Id));}catch(Exception e){return BadRequest(new{message=e.Message});}}
+    [HttpPost("team/change-password")] public async Task<IActionResult> Change(PasswordChangeRequest x){var a=await Identity();if(a is not {Type:"Team"})return Unauthorized();try{await repo.ChangePassword(a.Value.Id,x.CurrentPassword,x.NewPassword);return Ok();}catch(Exception e){return BadRequest(new{message=e.Message});}}
+    [HttpPost("team/files")] public async Task<IActionResult> Upload([FromForm]string fileType,[FromForm]string description,IFormFile file){var a=await Identity();if(a is not {Type:"Team"})return Unauthorized();try{return Ok(await repo.SaveFile(a.Value.Id,fileType,description,file));}catch(Exception e){return BadRequest(new{message=e.Message});}}
+    [HttpGet("files/{id:guid}")] public async Task<IActionResult> Download(Guid id){var a=await Identity();if(a is null)return Unauthorized();var f=await repo.File(id,a.Value.Id,a.Value.Type=="Coordinator");return f is null?NotFound():File(f.Value.Data,f.Value.ContentType,f.Value.Name);}
+    [HttpGet("coordinator/dashboard")] public async Task<IActionResult> Dashboard(){var a=await Identity();return a is {Type:"Coordinator"}?Ok(new{events=await repo.PublicEvents(),teams=await repo.Dashboard(),mentors=await repo.MentorAllocations()}):Unauthorized();}
+    [HttpPost("coordinator/events")] public async Task<IActionResult> AddEvent(ExternalEventRequest x){var a=await Identity();if(a is not {Type:"Coordinator"})return Unauthorized();await repo.SaveEvent(null,x);return Ok();}
+    [HttpPut("coordinator/events/{id:int}")] public async Task<IActionResult> EditEvent(int id,ExternalEventRequest x){var a=await Identity();if(a is not {Type:"Coordinator"})return Unauthorized();await repo.SaveEvent(id,x);return Ok();}
+    [HttpPost("coordinator/teams/{id:int}/approve")] public async Task<IActionResult> Approve(int id){var a=await Identity();if(a is not {Type:"Coordinator"})return Unauthorized();var credentials=await repo.Approve(id);return Ok(new{teamNumber=credentials.TeamNumber,password=credentials.Password});}
+    [HttpPut("coordinator/teams/{id:int}/review")] public async Task<IActionResult> Review(int id,TeamReviewRequest x){var a=await Identity();if(a is not {Type:"Coordinator"})return Unauthorized();await repo.Review(id,x);return Ok();}
+    [HttpPut("coordinator/teams/{id:int}")] public async Task<IActionResult> UpdateTeam(int id,CoordinatorTeamUpdateRequest x){var a=await Identity();if(a is not {Type:"Coordinator"})return Unauthorized();try{await repo.UpdateTeam(id,x);return Ok();}catch(Exception e){return BadRequest(new{message=e.Message});}}
+}
