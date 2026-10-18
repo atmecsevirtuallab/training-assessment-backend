@@ -69,8 +69,8 @@ WHEN NOT MATCHED THEN INSERT(MentorName,Designation) VALUES(source.MentorName,so
 MERGE EventMentors AS target USING (VALUES
 ('Dr. Shivaprasad B J','Associate Professor'),('Dr. Padmaja K','Associate Professor')
 ) AS source(MentorName,Designation) ON target.MentorName=source.MentorName
-WHEN MATCHED THEN UPDATE SET Designation=source.Designation
-WHEN NOT MATCHED THEN INSERT(MentorName,Designation,IsActive) VALUES(source.MentorName,source.Designation,0);
+WHEN MATCHED THEN UPDATE SET Designation=source.Designation,IsActive=1
+WHEN NOT MATCHED THEN INSERT(MentorName,Designation,IsActive) VALUES(source.MentorName,source.Designation,1);
 """;
             await Exec(sql);
             await Exec("IF NOT EXISTS(SELECT 1 FROM EventCoordinators WHERE Username='coordinator') INSERT EventCoordinators(Username,DisplayName,PasswordHash) VALUES('coordinator','Prof. Theja N',@p)", new SqlParameter("@p", "PBKDF2-SHA256$120000$y3vIzkTZOAmiDjoD3dCoCQ==$DlkBn0o4dt6to4XQe4ax5SlZu0FeNwgc9ZVndUtPZdo="));
