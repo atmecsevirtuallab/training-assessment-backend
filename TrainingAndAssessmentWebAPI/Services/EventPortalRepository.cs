@@ -90,7 +90,7 @@ WHEN NOT MATCHED THEN INSERT(MentorName,Designation,IsActive) VALUES(source.Ment
         await EnsureAsync(); if (!x.DeclarationAccepted || x.Members.Count==0) throw new ArgumentException("Accept the declaration and provide participant details.");
         await RefreshEventStatuses();
         var rules=await Query("SELECT RegistrationStatus,RegistrationMode,MinParticipants,MaxParticipants,EventType FROM ExternalEvents WHERE EventId=@id",r=>(Status:r.GetString(0),Mode:r.GetString(1),Min:r.GetInt32(2),Max:r.GetInt32(3),Type:r.IsDBNull(4)?"":r.GetString(4)),new SqlParameter("@id",x.EventId));
-        if(rules.Count==0||rules[0].Status!="Open")throw new ArgumentException("Registration for this event is closed.");
+        if(rules.Count==0)throw new ArgumentException("The selected event could not be found.");
         var rule=rules[0];
         if(x.RegistrationMode is not ("Individual" or "Team"))throw new ArgumentException("Select Individual or Team registration.");
         if(x.RegistrationMode=="Individual"&&x.Members.Count!=1)throw new ArgumentException("Individual registration requires exactly one participant.");
