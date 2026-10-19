@@ -10,3 +10,4 @@ public record TeamDetailsUpdateRequest(List<EventMemberRequest> Members);
 public record PasswordChangeRequest(string CurrentPassword, string NewPassword);
 public record TeamReviewRequest(string Status, string Remarks);
 public record CoordinatorTeamUpdateRequest(int EventId, string Category, string Mentor, string ApprovalStatus, string Status, string Remarks, List<EventMemberRequest> Members);
+public record EventFreezeRequest(bool IsFrozen);
