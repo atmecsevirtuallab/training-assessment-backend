@@ -77,6 +77,7 @@ WHEN NOT MATCHED THEN INSERT(MentorName,Designation,IsActive) VALUES(source.Ment
             await Exec(sql);
             await Exec("IF NOT EXISTS(SELECT 1 FROM EventCoordinators WHERE Username='coordinator') INSERT EventCoordinators(Username,DisplayName,PasswordHash) VALUES('coordinator','Prof. Theja N',@p)", new SqlParameter("@p", "PBKDF2-SHA256$120000$y3vIzkTZOAmiDjoD3dCoCQ==$DlkBn0o4dt6to4XQe4ax5SlZu0FeNwgc9ZVndUtPZdo="));
             await EventSeedData.EnsureAsync(cs);
+            await RemoveSafeDuplicateRegistrations();
             await EnsureMissingTeamCredentials();
             schemaReady = true;
         }
@@ -102,6 +103,10 @@ WHEN NOT MATCHED THEN INSERT(MentorName,Designation,IsActive) VALUES(source.Ment
         if(x.RegistrationMode=="Individual"&&x.Members.Count!=1)throw new ArgumentException("Individual registration requires exactly one participant.");
         if(x.RegistrationMode=="Team"&&(x.Members.Count<rule.Min||x.Members.Count>rule.Max))throw new ArgumentException($"This event requires {rule.Min}-{rule.Max} team members.");
         if(x.Members.Count(m=>m.IsLeader)!=1)throw new ArgumentException(x.RegistrationMode=="Individual"?"Select the participant.":"Select exactly one team leader.");
+        var submittedUsns=x.Members.Select(m=>m.Usn.Trim().ToUpperInvariant()).ToList();
+        if(submittedUsns.Any(string.IsNullOrWhiteSpace)||submittedUsns.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=submittedUsns.Count)throw new ArgumentException("Every participant must have a unique, valid USN.");
+        var sameEventTeams=await Query("SELECT TeamId FROM EventTeams WHERE EventId=@id",r=>r.GetInt32(0),new SqlParameter("@id",x.EventId));
+        foreach(var existingTeamId in sameEventTeams){var existingUsns=await Query("SELECT UPPER(LTRIM(RTRIM(USN))) FROM EventTeamMembers WHERE TeamId=@id",r=>r.GetString(0),new SqlParameter("@id",existingTeamId));if(existingUsns.Count==submittedUsns.Count&&new HashSet<string>(existingUsns,StringComparer.OrdinalIgnoreCase).SetEquals(submittedUsns))throw new ArgumentException("This Student/Team is already registered for the selected event. Duplicate registration is not allowed.");}
         if(!string.IsNullOrWhiteSpace(x.Mentor)&&Convert.ToInt32(await Scalar("SELECT COUNT(*) FROM EventMentors WHERE MentorName=@m AND IsActive=1",new SqlParameter("@m",x.Mentor.Trim()))??0)==0)throw new ArgumentException("Select a valid faculty mentor/guide.");
         var reference=$"EVR-{DateTime.UtcNow:yyMMdd}-{RandomNumberGenerator.GetInt32(1000,9999)}";
         await using var c=new SqlConnection(cs); await c.OpenAsync(); await using var tx=await c.BeginTransactionAsync();
@@ -146,6 +151,7 @@ WHEN NOT MATCHED THEN INSERT(MentorName,Designation,IsActive) VALUES(source.Ment
     static string Hash(string x)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(x)));
     string UnprotectCredential(string value){try{return credentialProtector.Unprotect(value);}catch{return "Password unavailable - reset required";}}
     async Task EnsureMissingTeamCredentials(){var ids=await Query("SELECT TeamId FROM EventTeams WHERE TeamNumber IS NOT NULL AND PasswordHash IS NULL",r=>r.GetInt32(0));foreach(var id in ids){var password=$"Atme@{RandomNumberGenerator.GetInt32(100000,999999)}";await Exec("UPDATE EventTeams SET PasswordHash=@p,CredentialCipher=@x,MustChangePassword=1 WHERE TeamId=@id",new("@p",PasswordSecurity.Hash(password)),new("@x",credentialProtector.Protect(password)),new("@id",id));}}
+    async Task RemoveSafeDuplicateRegistrations(){var teams=await Query("SELECT t.TeamId,t.EventId,t.CreatedAt FROM EventTeams t WHERE t.ApprovalStatus='Pending' AND t.PostEventStatus='Yet to update' AND NOT EXISTS(SELECT 1 FROM EventFiles f WHERE f.TeamId=t.TeamId) ORDER BY t.CreatedAt,t.TeamId",r=>(Id:r.GetInt32(0),EventId:r.GetInt32(1),CreatedAt:r.GetDateTime(2)));var records=new List<(int Id,int EventId,string MemberKey)>();foreach(var team in teams){var usns=await Query("SELECT UPPER(LTRIM(RTRIM(USN))) FROM EventTeamMembers WHERE TeamId=@id ORDER BY UPPER(LTRIM(RTRIM(USN)))",r=>r.GetString(0),new SqlParameter("@id",team.Id));if(usns.Count>0)records.Add((team.Id,team.EventId,string.Join("|",usns)));}foreach(var duplicate in records.GroupBy(x=>(x.EventId,x.MemberKey)).SelectMany(g=>g.Skip(1))){await Exec("DELETE EventAuthSessions WHERE PrincipalType='Team' AND PrincipalId=@id; DELETE EventTeams WHERE TeamId=@id",new SqlParameter("@id",duplicate.Id));}}
     async Task<int> Exec(string sql,params SqlParameter[] p){await using var c=new SqlConnection(cs);await c.OpenAsync();await using var q=new SqlCommand(sql,c);q.Parameters.AddRange(p);return await q.ExecuteNonQueryAsync();}
     async Task<object?> Scalar(string sql,params SqlParameter[] p){await using var c=new SqlConnection(cs);await c.OpenAsync();await using var q=new SqlCommand(sql,c);q.Parameters.AddRange(p);return await q.ExecuteScalarAsync();}
     async Task<List<T>> Query<T>(string sql,Func<SqlDataReader,T> map,params SqlParameter[] p){var x=new List<T>();await using var c=new SqlConnection(cs);await c.OpenAsync();await using var q=new SqlCommand(sql,c);q.Parameters.AddRange(p.Where(z=>z.ParameterName!="@t"||sql.Contains("@t")).ToArray());await using var r=await q.ExecuteReaderAsync();while(await r.ReadAsync())x.Add(map(r));return x;}
