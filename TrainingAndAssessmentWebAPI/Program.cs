@@ -24,6 +24,7 @@ namespace TrainingAndAssessmentWebAPI
             builder.Services.AddDataProtection();
             builder.Services.AddScoped<PortalRepository>();
             builder.Services.AddScoped<EventPortalRepository>();
+            builder.Services.AddScoped<EventTeamWorkbookService>();
             builder.Services.AddScoped<ProgramExecutionService>();
             builder.Services.AddSingleton<InteractiveProgramService>();
             builder.Services.AddHttpClient<OllamaAnalysisService>(client => client.Timeout = TimeSpan.FromSeconds(90));

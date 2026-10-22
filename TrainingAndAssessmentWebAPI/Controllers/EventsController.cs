@@ -5,7 +5,7 @@ using TrainingAndAssessmentWebAPI.Services;
 namespace TrainingAndAssessmentWebAPI.Controllers;
 
 [ApiController,Route("api/events")]
-public sealed class EventsController(EventPortalRepository repo):ControllerBase
+public sealed class EventsController(EventPortalRepository repo,EventTeamWorkbookService teamWorkbook):ControllerBase
 {
     string Token=>Request.Headers.Authorization.ToString().Replace("Bearer ","",StringComparison.OrdinalIgnoreCase).Trim();
     async Task<(string Type,int Id)?> Identity()=>await repo.Auth(Token);
@@ -24,6 +24,7 @@ public sealed class EventsController(EventPortalRepository repo):ControllerBase
     [HttpPost("team/files")] public async Task<IActionResult> Upload([FromForm]string fileType,[FromForm]string description,IFormFile file){var a=await Identity();if(a is not {Type:"Team"})return Unauthorized();if(await repo.IsFrozen(a.Value.Id))return BadRequest(new{message="The coordinator has verified and frozen this record. Further uploads are not permitted."});try{return Ok(await repo.SaveFile(a.Value.Id,fileType,description,file));}catch(Exception e){return BadRequest(new{message=e.Message});}}
     [HttpGet("files/{id:guid}")] public async Task<IActionResult> Download(Guid id){var a=await Identity();if(a is null)return Unauthorized();var f=await repo.File(id,a.Value.Id,a.Value.Type=="Coordinator");return f is null?NotFound():File(f.Value.Data,f.Value.ContentType,f.Value.Name);}
     [HttpGet("coordinator/dashboard")] public async Task<IActionResult> Dashboard(){var a=await Identity();return a is {Type:"Coordinator"}?Ok(new{events=await repo.PublicEvents(),teams=await repo.Dashboard(),mentors=await repo.MentorAllocations(),winningTeams=await repo.WinningTeams()}):Unauthorized();}
+    [HttpGet("coordinator/team-details.xlsx")] public async Task<IActionResult> TeamDetailsWorkbook(){var a=await Identity();return a is {Type:"Coordinator"}?File(await teamWorkbook.GenerateAsync(),"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",$"Team_Details_CSE_{DateTime.Now:yyyyMMdd}.xlsx"):Unauthorized();}
     [HttpPost("coordinator/winning-teams")] public async Task<IActionResult> AddWinningTeam([FromForm]string socialMediaUrl,IFormFile photo){var a=await Identity();if(a is not {Type:"Coordinator"})return Unauthorized();try{return Ok(await repo.SaveWinningTeam(null,socialMediaUrl,photo));}catch(Exception e){return BadRequest(new{message=e.Message});}}
     [HttpPut("coordinator/winning-teams/{id:int}")] public async Task<IActionResult> EditWinningTeam(int id,[FromForm]string socialMediaUrl,IFormFile? photo){var a=await Identity();if(a is not {Type:"Coordinator"})return Unauthorized();try{return Ok(await repo.SaveWinningTeam(id,socialMediaUrl,photo));}catch(Exception e){return BadRequest(new{message=e.Message});}}
     [HttpDelete("coordinator/winning-teams/{id:int}")] public async Task<IActionResult> DeleteWinningTeam(int id){var a=await Identity();if(a is not {Type:"Coordinator"})return Unauthorized();await repo.DeleteWinningTeam(id);return NoContent();}
