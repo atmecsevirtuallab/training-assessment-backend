@@ -49,14 +49,14 @@ public sealed class EventTeamWorkbookService(IConfiguration configuration)
 
             var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
             var sheetData = new SheetData();
+            var mergeCells = new MergeCells(
+                new MergeCell { Reference = "A1:A2" }, new MergeCell { Reference = "B1:F1" }, new MergeCell { Reference = "G1:G2" },
+                new MergeCell { Reference = "H1:H2" }, new MergeCell { Reference = "I1:I2" }, new MergeCell { Reference = "J1:J2" },
+                new MergeCell { Reference = "K1:K2" }, new MergeCell { Reference = "L1:L2" }, new MergeCell { Reference = "M1:N1" },
+                new MergeCell { Reference = "O1:O2" }, new MergeCell { Reference = "P1:P2" });
             worksheetPart.Worksheet = new Worksheet(
                 new SheetViews(new SheetView(new Pane { VerticalSplit = 2D, TopLeftCell = "A3", ActivePane = PaneValues.BottomLeft, State = PaneStateValues.Frozen }) { WorkbookViewId = 0U }),
-                CreateColumns(), sheetData,
-                new MergeCells(
-                    new MergeCell { Reference = "A1:A2" }, new MergeCell { Reference = "B1:F1" }, new MergeCell { Reference = "G1:G2" },
-                    new MergeCell { Reference = "H1:H2" }, new MergeCell { Reference = "I1:I2" }, new MergeCell { Reference = "J1:J2" },
-                    new MergeCell { Reference = "K1:K2" }, new MergeCell { Reference = "L1:L2" }, new MergeCell { Reference = "M1:N1" },
-                    new MergeCell { Reference = "O1:O2" }, new MergeCell { Reference = "P1:P2" }));
+                CreateColumns(), sheetData, mergeCells);
 
             sheetData.Append(new Row(
                 Text("A1", "Team#", 1), Text("B1", "Team Members", 1), Text("G1", "Mentor", 1), Text("H1", "Event Name", 1),
@@ -67,17 +67,27 @@ public sealed class EventTeamWorkbookService(IConfiguration configuration)
                 Text("M2", "From Date", 2), Text("N2", "To Date", 2)) { RowIndex = 2 });
 
             uint rowNumber = 3;
-            foreach (var item in records)
+            foreach (var team in records.GroupBy(item => item.TeamNumber))
             {
-                var days = item.FromDate.HasValue && item.ToDate.HasValue ? (item.ToDate.Value.Date - item.FromDate.Value.Date).Days + 1 : 0;
-                sheetData.Append(new Row(
-                    Text($"A{rowNumber}", item.TeamNumber, 3), Text($"B{rowNumber}", item.Name, 3), Text($"C{rowNumber}", item.Usn, 3),
-                    Text($"D{rowNumber}", item.Contact, 3), Text($"E{rowNumber}", item.Email, 3), Text($"F{rowNumber}", item.Branch, 3),
-                    Text($"G{rowNumber}", item.Mentor, 3), Text($"H{rowNumber}", item.EventName, 3), Text($"I{rowNumber}", item.EventType, 3),
-                    Text($"J{rowNumber}", item.HostingOrganization, 3), Text($"K{rowNumber}", item.Location, 3), Number($"L{rowNumber}", days, 3),
-                    Date($"M{rowNumber}", item.FromDate), Date($"N{rowNumber}", item.ToDate), Text($"O{rowNumber}", item.Status, 3),
-                    Text($"P{rowNumber}", item.Remarks, 3)) { RowIndex = rowNumber });
-                rowNumber++;
+                var firstRow = rowNumber;
+                var firstMember = true;
+                foreach (var item in team)
+                {
+                    var days = item.FromDate.HasValue && item.ToDate.HasValue ? (item.ToDate.Value.Date - item.FromDate.Value.Date).Days + 1 : 0;
+                    sheetData.Append(new Row(
+                        Text($"A{rowNumber}", firstMember ? item.TeamNumber : "", 5), Text($"B{rowNumber}", item.Name, 3), Text($"C{rowNumber}", item.Usn, 3),
+                        Text($"D{rowNumber}", item.Contact, 3), Text($"E{rowNumber}", item.Email, 3), Text($"F{rowNumber}", item.Branch, 3),
+                        Text($"G{rowNumber}", firstMember ? item.Mentor : "", 5), Text($"H{rowNumber}", firstMember ? item.EventName : "", 5), Text($"I{rowNumber}", firstMember ? item.EventType : "", 5),
+                        Text($"J{rowNumber}", firstMember ? item.HostingOrganization : "", 5), Text($"K{rowNumber}", firstMember ? item.Location : "", 5), firstMember ? Number($"L{rowNumber}", days, 5) : Text($"L{rowNumber}", "", 5),
+                        Date($"M{rowNumber}", firstMember ? item.FromDate : null, 6), Date($"N{rowNumber}", firstMember ? item.ToDate : null, 6), Text($"O{rowNumber}", firstMember ? item.Status : "", 5),
+                        Text($"P{rowNumber}", item.Remarks, 3)) { RowIndex = rowNumber });
+                    firstMember = false;
+                    rowNumber++;
+                }
+                var lastRow = rowNumber - 1;
+                if (lastRow > firstRow)
+                    foreach (var column in new[] { "A", "G", "H", "I", "J", "K", "L", "M", "N", "O" })
+                        mergeCells.Append(new MergeCell { Reference = $"{column}{firstRow}:{column}{lastRow}" });
             }
 
             var sheets = workbookPart.Workbook.AppendChild(new Sheets());
@@ -93,9 +103,9 @@ public sealed class EventTeamWorkbookService(IConfiguration configuration)
     private static Column Width(uint index, double width) => new() { Min = index, Max = index, Width = width, CustomWidth = true };
     private static Cell Text(string reference, string? value, uint style) => new() { CellReference = reference, DataType = CellValues.InlineString, StyleIndex = style, InlineString = new InlineString(new Text(value ?? "")) };
     private static Cell Number(string reference, int value, uint style) => new() { CellReference = reference, DataType = CellValues.Number, StyleIndex = style, CellValue = new CellValue(value) };
-    private static Cell Date(string reference, DateTime? value) => value.HasValue
-        ? new Cell { CellReference = reference, DataType = CellValues.Number, StyleIndex = 4U, CellValue = new CellValue(value.Value.ToOADate()) }
-        : Text(reference, "", 3U);
+    private static Cell Date(string reference, DateTime? value, uint style = 4U) => value.HasValue
+        ? new Cell { CellReference = reference, DataType = CellValues.Number, StyleIndex = style, CellValue = new CellValue(value.Value.ToOADate()) }
+        : Text(reference, "", style);
 
     private static Stylesheet CreateStyles()
     {
@@ -115,7 +125,9 @@ public sealed class EventTeamWorkbookService(IConfiguration configuration)
             new CellFormat { FontId = 1U, FillId = 2U, BorderId = 1U, ApplyAlignment = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center, Vertical = VerticalAlignmentValues.Center, WrapText = true } },
             new CellFormat { FontId = 1U, FillId = 3U, BorderId = 1U, ApplyAlignment = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center, Vertical = VerticalAlignmentValues.Center, WrapText = true } },
             new CellFormat { FontId = 0U, FillId = 0U, BorderId = 1U, ApplyAlignment = true, Alignment = new Alignment { Vertical = VerticalAlignmentValues.Center, WrapText = true } },
-            new CellFormat { FontId = 0U, FillId = 0U, BorderId = 1U, NumberFormatId = 14U, ApplyNumberFormat = true, ApplyAlignment = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center, Vertical = VerticalAlignmentValues.Center } });
+            new CellFormat { FontId = 0U, FillId = 0U, BorderId = 1U, NumberFormatId = 14U, ApplyNumberFormat = true, ApplyAlignment = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center, Vertical = VerticalAlignmentValues.Center } },
+            new CellFormat { FontId = 0U, FillId = 0U, BorderId = 1U, ApplyAlignment = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Left, Vertical = VerticalAlignmentValues.Center, WrapText = true } },
+            new CellFormat { FontId = 0U, FillId = 0U, BorderId = 1U, NumberFormatId = 14U, ApplyNumberFormat = true, ApplyAlignment = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Left, Vertical = VerticalAlignmentValues.Center } });
         return new Stylesheet(fonts, fills, borders, new CellStyleFormats(new CellFormat()), formats);
     }
 
