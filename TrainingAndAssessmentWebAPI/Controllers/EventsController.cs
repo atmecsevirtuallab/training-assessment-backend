@@ -12,6 +12,7 @@ public sealed class EventsController(EventPortalRepository repo,EventTeamWorkboo
     [HttpGet] public Task<List<object>> Events()=>repo.PublicEvents();
     [HttpGet("mentors")] public Task<List<object>> Mentors()=>repo.Mentors();
     [HttpGet("teams")] public Task<List<object>> Teams()=>repo.PublicTeams();
+    [HttpGet("team-summary")] public Task<object> TeamSummary()=>repo.PublicTeamSummary();
     [HttpGet("winning-teams")] public Task<List<object>> WinningTeams()=>repo.WinningTeams();
     [HttpGet("winning-teams/{id:int}/photo")] public async Task<IActionResult> WinningTeamPhoto(int id){var photo=await repo.WinningTeamPhoto(id);return photo is null?NotFound():File(photo.Value.Data,photo.Value.ContentType,photo.Value.Name);}
     [HttpPost("registrations")] public async Task<IActionResult> Register(EventRegistrationRequest x){try{var y=await repo.Register(x);return Ok(new{registrationReference=y.RegistrationReference,teamNumber=y.TeamNumber,password=y.Password,message="Registration completed. Save the Student/Team number and password securely."});}catch(Exception e){return BadRequest(new{message=e.Message});}}
