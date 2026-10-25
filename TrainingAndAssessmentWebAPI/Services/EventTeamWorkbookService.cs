@@ -26,6 +26,7 @@ public sealed class EventTeamWorkbookService(IConfiguration configuration)
                 FROM EventTeams t
                 JOIN ExternalEvents e ON e.EventId=t.EventId
                 JOIN EventTeamMembers m ON m.TeamId=t.TeamId
+                WHERE t.IsDeleted=0
                 ORDER BY t.CreatedAt DESC,t.TeamId,m.IsLeader DESC,m.MemberId
                 """;
             await using var command = new SqlCommand(sql, connection);
