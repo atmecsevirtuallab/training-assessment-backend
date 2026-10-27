@@ -70,7 +70,8 @@ MERGE EventMentors AS target USING (VALUES
 ('Roopa B','Assistant Professor'),('Sandesh R','Assistant Professor'),('Shrilakshmi Prasad','Assistant Professor'),('Ashwini P','Assistant Professor'),('Vanishree B','Assistant Professor'),
 ('Bindushree V','Assistant Professor'),('Yashaswini Urs','Assistant Professor'),('Darshini M S','Assistant Professor'),
 ('Rakshitha N M','Assistant Professor'),('Theja N','Assistant Professor'),('Gadi Divyashree','Assistant Professor'),('Akanksha V','Assistant Professor'),('Kavitha S','Assistant Professor'),
-('Arpitha A','Assistant Professor'),('Bhavya Dechamma M','Assistant Professor')
+('Arpitha A','Assistant Professor'),('Bhavya Dechamma M','Assistant Professor'),
+('Dr. Jayantkumar A Rathod','Professor'),('Kavyashree B L','Assistant Professor')
 ) AS source(MentorName,Designation) ON target.MentorName=source.MentorName
 WHEN MATCHED THEN UPDATE SET Designation=source.Designation,IsActive=1
 WHEN NOT MATCHED THEN INSERT(MentorName,Designation) VALUES(source.MentorName,source.Designation);
